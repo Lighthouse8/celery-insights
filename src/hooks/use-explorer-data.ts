@@ -1,3 +1,5 @@
+import type { ReadRequest } from "../../runtime/observation/queries"
+import { queryObservation } from "@lib/observation-query"
 import { useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
 import type { TimeRange } from "@danyi1212/time-range-picker"
@@ -186,7 +188,7 @@ export const useExplorerData = (state: ExplorerQueryState, pageSize = 50): UseEx
       if (state.mode === "tasks") {
         const { clause, bindings: whereBindings } = buildTaskWhereClause(state)
         const sortField = TASK_SORT_FIELDS.has(state.sortField) ? state.sortField : "last_updated"
-        const [taskRows, countRows, stateFilters, typeFilters, workerFilters, buckets] = await db.query<
+        const [taskRows, countRows, stateFilters, typeFilters, workerFilters, buckets] = await queryObservation<
           [
             SurrealTask[],
             [{ count: number }],
@@ -196,6 +198,21 @@ export const useExplorerData = (state: ExplorerQueryState, pageSize = 50): UseEx
             { bucket: string; state: string; count: number }[],
           ]
         >(
+          db,
+          {
+            operation: "explorer",
+            table: "task",
+            ...bindings,
+            query: state.query,
+            states: state.states,
+            types: state.types,
+            workers: state.workers,
+            workflowStates: state.workflowStates,
+            rootTypes: state.rootTypes,
+            sortField: sortField as ReadRequest["sortField"],
+            sortDirection: state.sortDirection,
+            limit: rowLimit,
+          },
           `SELECT * FROM task${clause} ORDER BY ${sortField} ${state.sortDirection} LIMIT $rowLimit;` +
             `SELECT count() AS count FROM task${clause} GROUP ALL;` +
             `SELECT state, count() AS count FROM task${clause} GROUP BY state;` +
@@ -222,7 +239,7 @@ export const useExplorerData = (state: ExplorerQueryState, pageSize = 50): UseEx
 
       const { clause, bindings: whereBindings } = buildWorkflowWhereClause(state)
       const sortField = WORKFLOW_SORT_FIELDS.has(state.sortField) ? state.sortField : "last_updated"
-      const [workflowRows, countRows, workflowStateFilters, rootTypeFilters, buckets] = await db.query<
+      const [workflowRows, countRows, workflowStateFilters, rootTypeFilters, buckets] = await queryObservation<
         [
           SurrealWorkflow[],
           [{ count: number }],
@@ -231,6 +248,21 @@ export const useExplorerData = (state: ExplorerQueryState, pageSize = 50): UseEx
           { bucket: string; aggregate_state: string; count: number }[],
         ]
       >(
+        db,
+        {
+          operation: "explorer",
+          table: "workflow",
+          ...bindings,
+          query: state.query,
+          states: state.states,
+          types: state.types,
+          workers: state.workers,
+          workflowStates: state.workflowStates,
+          rootTypes: state.rootTypes,
+          sortField: sortField as ReadRequest["sortField"],
+          sortDirection: state.sortDirection,
+          limit: rowLimit,
+        },
         `SELECT * FROM workflow${clause} ORDER BY ${sortField} ${state.sortDirection} LIMIT $rowLimit;` +
           `SELECT count() AS count FROM workflow${clause} GROUP ALL;` +
           `SELECT aggregate_state, count() AS count FROM workflow${clause} GROUP BY aggregate_state;` +

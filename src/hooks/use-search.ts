@@ -1,3 +1,4 @@
+import { queryObservation } from "@lib/observation-query"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useSurrealDB } from "@components/surrealdb-provider"
 import type { SurrealTask, SurrealWorker } from "@/types/surreal-records"
@@ -18,7 +19,7 @@ export interface SearchResult {
 }
 
 /**
- * Search hook — queries SurrealDB directly for tasks and workers matching
+ * Search hook — reads tasks and workers matching
  * a search string. Input is debounced by 300ms to avoid excessive queries.
  *
  * Searches tasks by id, type, and exception; workers by id.
@@ -43,7 +44,9 @@ export const useSearch = (query: string, limit = 10) => {
       }
 
       try {
-        const [tasks, workers] = await db.query<[SearchTaskResult[], SurrealWorker[]]>(
+        const [tasks, workers] = await queryObservation<[SearchTaskResult[], SurrealWorker[]]>(
+          db,
+          { operation: "search", query: q, limit },
           `SELECT *,
                         (SELECT root_task_type, aggregate_state, task_count FROM workflow WHERE id = type::record('workflow', workflow_id))[0] AS workflow
                     FROM task WHERE

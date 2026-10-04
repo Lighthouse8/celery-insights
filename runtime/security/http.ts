@@ -1,3 +1,4 @@
+import type { ReadScope } from "./read-scope"
 import { Authorization, type PolicyContext } from "./opa"
 import { timingSafeEqual } from "node:crypto"
 import type { AuthenticationSnapshot } from "../authentication-config"
@@ -70,6 +71,12 @@ export async function secureApplicationRequest(
 }
 
 export class AuthenticationHttp {
+  private readonly decisions = new WeakMap<Request, ReadScope>()
+  scope(request: Request): ReadScope {
+    const scope = this.decisions.get(request)
+    if (!scope) throw new AuthError(403, "Missing authorization decision")
+    return scope
+  }
   readonly origin: string
   constructor(
     private readonly snapshot: AuthenticationSnapshot,
@@ -121,7 +128,8 @@ export class AuthenticationHttp {
       if (!websocket && request.headers.get(requestHeader) !== "1") throw new AuthError(403, "Request header required")
     }
     let actions = routePermissions[`${request.method} ${pathname}`]
-    if (pathname === "/surreal/rpc" && ["GET", "POST"].includes(request.method)) actions = payloadPermissions
+    if (pathname === "/api/observation/rpc" && ["GET", "POST"].includes(request.method))
+      actions = ["task.metadata.read"]
     if (pathname === "/mcp") actions = payloadPermissions
     if (!actions) throw new AuthError(403, "Access denied")
     const context: PolicyContext = {
@@ -129,7 +137,7 @@ export class AuthenticationHttp {
       path: pathname,
       transport: websocket ? "websocket" : "http",
     }
-    await this.authorization.check(principal, actions, context, replay)
+    this.decisions.set(request, await this.authorization.check(principal, actions, context, replay))
     return principal
   }
 }
