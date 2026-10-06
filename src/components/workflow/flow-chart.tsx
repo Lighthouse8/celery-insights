@@ -42,6 +42,7 @@ function createEdge(sourceId: string, targetId: string): Edge {
 
 const getChildMap = (tasks: Task[]): Map<string, Task[]> => {
   const map = new Map<string, Task[]>()
+  const taskMap = new Map(tasks.map((task) => [task.id, task]))
   for (const task of tasks)
     if (task.parent_id) {
       const id = task.parent_id
@@ -49,6 +50,14 @@ const getChildMap = (tasks: Task[]): Map<string, Task[]> => {
 
       map.get(id)?.push(task)
     }
+  for (const parent of tasks) {
+    for (const childId of new Set(parent.children)) {
+      const child = taskMap.get(childId)
+      if (!child || child.parent_id) continue
+      if (!map.has(parent.id)) map.set(parent.id, [])
+      map.get(parent.id)?.push(child)
+    }
+  }
   return map
 }
 
@@ -65,33 +74,38 @@ export const getFlowGraph = (
   const taskMap = new Map<string, Task>(tasks.map((task) => [task.id, task]))
   const childMap = getChildMap(tasks)
   const visited = new Set<string>()
+  let nextLeafRow = 0
 
-  function dfs(task: Task, x: number, y: number) {
+  const visitTask = (task: Task, column: number): number => {
     visited.add(task.id)
-    nodes.push(createNode(task, x, y))
+    const node = createNode(task, column, 0)
+    nodes.push(node)
 
     const children = childMap.get(task.id) || []
-
-    const startY = y - (children.length - 1) / 2
-    const childX = x + 1
-
-    children
+    const childRows = children
       .sort((a, b) => a.id.localeCompare(b.id))
-      .forEach((child, index) => {
-        const childY = startY + index
+      .map((child) => {
         if (visited.has(child.id)) {
           const replacedId = child.id + "-replaced"
-          nodes.push(createNode(child, childX, childY, replacedId))
+          const row = nextLeafRow++
+          nodes.push(createNode(child, column + 1, row, replacedId))
           edges.push(createEdge(task.id, replacedId))
-        } else {
-          edges.push(createEdge(task.id, child.id))
-          dfs(child, childX, childY)
+          return row
         }
+        edges.push(createEdge(task.id, child.id))
+        return visitTask(child, column + 1)
       })
+    const row = childRows.length ? (childRows[0] + childRows[childRows.length - 1]) / 2 : nextLeafRow++
+    node.position.y = row * 100
+    return row
   }
 
   const rootTask = taskMap.get(rootTaskId)
-  if (rootTask) dfs(rootTask, initialPosition?.x ?? 0, initialPosition?.y ?? 0)
+  if (rootTask) {
+    const rootRow = visitTask(rootTask, initialPosition?.x ?? 0)
+    const offset = ((initialPosition?.y ?? 0) - rootRow) * 100
+    for (const node of nodes) node.position.y += offset
+  }
 
   return {
     nodes: nodes,
