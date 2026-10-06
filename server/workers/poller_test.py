@@ -105,7 +105,7 @@ class TestWorkerPoller:
 
         await WorkerPoller(celery_app)._poll()
 
-        assert mock_db.query.call_count == 2
+        assert mock_db.query.call_count == 3
         query, parameters = mock_db.query.call_args_list[0].args
         assert "UPSERT" in query
         serialized = json.loads(parameters["data"])
@@ -136,8 +136,7 @@ class TestWorkerPoller:
         poller = WorkerPoller(celery_app)
         await poller._poll()
 
-        # First call: upsert the worker, second call: query existing workers
-        assert mock_db.query.call_count == 2
+        assert mock_db.query.call_count == 3
 
         upsert_call = mock_db.query.call_args_list[0]
         query_str = upsert_call[0][0]
@@ -195,9 +194,8 @@ class TestWorkerPoller:
         poller = WorkerPoller(celery_app)
         await poller._poll()
 
-        # Calls: 1 upsert for alive@host + 1 query for existing workers = 2
         # No update for alive@host in offline detection since it responded
-        assert mock_db.query.call_count == 2
+        assert mock_db.query.call_count == 3
 
     @pytest.mark.asyncio
     async def test_poll_handles_inspect_error(self, celery_app, mocker: MockerFixture):
