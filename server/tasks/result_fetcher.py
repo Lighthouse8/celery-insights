@@ -9,7 +9,7 @@ from celery.result import AsyncResult
 from celery.backends.redis import RedisBackend
 from surrealdb.types import Value
 
-from events.ingester import build_workflow_summary_recompute
+from events.ingester import TERMINAL_TASK_STATES_SQL, build_workflow_summary_recompute
 from surrealdb_client import get_db
 
 logger = logging.getLogger(__name__)
@@ -79,15 +79,16 @@ def _build_task_meta_upsert(task_id: str, meta: dict) -> tuple[str, dict]:
 
     set_clauses = [
         "state = IF $meta_apply_state THEN $state ELSE $meta_previous.state END",
-        "type = IF $meta_apply_state THEN $type ?? $meta_previous.type ELSE $meta_previous.type END",
-        "args = IF $meta_apply_state THEN $args ?? $meta_previous.args ELSE $meta_previous.args END",
-        "kwargs = IF $meta_apply_state THEN $kwargs ?? $meta_previous.kwargs ELSE $meta_previous.kwargs END",
-        "worker = IF $meta_apply_state THEN $worker ?? $meta_previous.worker ELSE $meta_previous.worker END",
-        "retries = IF $meta_apply_state THEN $retries ?? $meta_previous.retries ELSE $meta_previous.retries END",
-        "routing_key = IF $meta_apply_state THEN $routing_key ?? $meta_previous.routing_key "
-        "ELSE $meta_previous.routing_key END",
+        # Invocation metadata is not state: older backend metadata still fills gaps left by terminal-only events.
+        *(
+            f"{field} = IF $meta_apply_state THEN ${field} ?? $meta_previous.{field} "
+            f"ELSE $meta_previous.{field} ?? ${field} END"
+            for field in ("type", "args", "kwargs", "worker", "retries", "routing_key")
+        ),
         "workflow_id = $meta_previous.workflow_id ?? $workflow_id",
         "last_updated = IF $meta_apply_state THEN $meta_timestamp ELSE $meta_previous.last_updated END",
+        "last_updated_observed = IF $meta_apply_state THEN $meta_observed "
+        "ELSE $meta_previous.last_updated_observed ?? false END",
         "first_observed_at = $meta_previous.first_observed_at ?? $meta_timestamp",
         "sent_at = $meta_previous.sent_at ?? $meta_timestamp",
         "children = $meta_previous.children ?? []",
@@ -133,14 +134,19 @@ def _build_task_meta_upsert(task_id: str, meta: dict) -> tuple[str, dict]:
 
     target = "type::record('task', $task_id)"
     assignments = ", ".join(set_clauses)
+    # An undated import stores the monitor's observation time as last_updated. That time is not task
+    # evidence, so dated terminal metadata may replace it; event-derived timestamps keep the freshness guard.
     query = (
         f"LET $meta_previous = (SELECT * FROM {target})[0] ?? {{}}; "
         "LET $meta_timestamp = IF $last_updated != NONE THEN <datetime>$last_updated "
         "ELSE $meta_previous.last_updated ?? <datetime>$observed_at END; "
+        "LET $meta_observed = IF $last_updated != NONE THEN false "
+        "ELSE ($meta_previous.last_updated_observed ?? ($meta_previous.last_updated = NONE)) END; "
         "LET $meta_apply_state = $meta_previous.state = NONE OR "
         "IF $last_updated != NONE THEN $meta_previous.last_updated = NONE "
         "OR $meta_timestamp >= $meta_previous.last_updated "
-        "ELSE $meta_previous.state NOT IN ['SUCCESS', 'FAILURE', 'REVOKED', 'REJECTED', 'IGNORED'] END; "
+        f"OR ($meta_previous.last_updated_observed = true AND $meta_previous.state NOT IN {TERMINAL_TASK_STATES_SQL}) "
+        f"ELSE $meta_previous.state NOT IN {TERMINAL_TASK_STATES_SQL} END; "
         f"UPSERT {target} SET {assignments}"
     )
     return query, params
