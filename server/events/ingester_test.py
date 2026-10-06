@@ -106,7 +106,7 @@ class TestBuildTaskUpsert:
         query, params = build_task_upsert(event, 0)
         for field in ("root_id", "parent_id"):
             assert (
-                f"{field} = IF $t0_previous.{field} IS NONE OR $t0_previous.last_updated IS NONE"
+                f"{field} = IF $t0_previous.{field} IS NONE OR $t0_apply"
                 f" OR <datetime>$t0_ts >= $t0_previous.last_updated"
                 f" THEN $t0_{field} ELSE $t0_previous.{field} END"
             ) in query
