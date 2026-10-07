@@ -529,7 +529,7 @@ def build_worker_upsert(event: dict, idx: int) -> tuple[str, dict]:
         # Polls skip offline workers, so observations made before the worker left would otherwise outlive it.
         query += (
             f"; UPDATE task SET execution_active = NONE WHERE worker = ${p}_id AND state = 'STARTED'"
-            f" AND execution_observed_at <= <datetime>${p}_ts"
+            f" AND execution_active != NONE AND execution_observed_at <= <datetime>${p}_ts"
         )
     return query, params
 
