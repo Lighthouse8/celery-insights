@@ -13,6 +13,14 @@ export enum TaskState {
   IGNORED = "IGNORED",
 }
 
+/** Latest progress a task reported with a `task-progress` event */
+export interface SurrealTaskProgress {
+  current: number
+  total?: number | null
+  description?: string | null
+  updated_at: string
+}
+
 /** Task record as stored in SurrealDB */
 export interface SurrealTask {
   id: unknown // SurrealDB RecordId — use String(id) for comparison
@@ -44,6 +52,7 @@ export interface SurrealTask {
   result_truncated?: boolean
   exception?: string | null
   traceback?: string | null
+  progress?: SurrealTaskProgress | null
 }
 
 export interface SurrealWorkflow {
@@ -192,6 +201,13 @@ export const parseWorkerInspect = (worker: SurrealWorker | null): WorkerInspectD
 
 const isoToDate = (iso: string | null | undefined): Date | undefined => (iso ? new Date(iso) : undefined)
 
+export interface TaskProgress {
+  current: number
+  total?: number
+  description?: string
+  updated_at: Date
+}
+
 /** Parsed task — same shape as SurrealTask but with extracted id and Date timestamps */
 export interface Task {
   id: string
@@ -223,6 +239,7 @@ export interface Task {
   result_truncated?: boolean
   exception?: string
   traceback?: string
+  progress?: TaskProgress
 }
 
 export interface Workflow {
@@ -272,6 +289,14 @@ export const parseTask = (raw: SurrealTask): Task => ({
   result_truncated: raw.result_truncated,
   exception: raw.exception || undefined,
   traceback: raw.traceback || undefined,
+  progress: raw.progress
+    ? {
+        current: raw.progress.current,
+        total: raw.progress.total ?? undefined,
+        description: raw.progress.description || undefined,
+        updated_at: isoToDate(raw.progress.updated_at) || new Date(),
+      }
+    : undefined,
 })
 
 export const parseWorkflow = (raw: SurrealWorkflow): Workflow => ({

@@ -34,6 +34,11 @@ DEFINE FIELD OVERWRITE result ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE result_truncated ON task TYPE bool DEFAULT false;
 DEFINE FIELD OVERWRITE exception ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE traceback ON task TYPE option<string>;
+DEFINE FIELD OVERWRITE progress ON task TYPE option<object>;
+DEFINE FIELD OVERWRITE progress.current ON task TYPE number;
+DEFINE FIELD OVERWRITE progress.total ON task TYPE option<number>;
+DEFINE FIELD OVERWRITE progress.description ON task TYPE option<string>;
+DEFINE FIELD OVERWRITE progress.updated_at ON task TYPE datetime;
 
 DEFINE INDEX OVERWRITE idx_task_state ON task FIELDS state;
 DEFINE INDEX OVERWRITE idx_task_type ON task FIELDS type;
