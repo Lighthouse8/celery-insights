@@ -331,7 +331,9 @@ def build_task_upsert(event: dict, idx: int) -> tuple[str, dict]:
     hostname = event.get("hostname")
     if hostname:
         params[f"{p}_worker"] = hostname
-        set_clauses.append(f"worker = IF {apply_fields} THEN ${p}_worker ELSE ${p}_previous.worker END")
+        set_clauses.append(
+            f"worker = IF ${p}_previous.worker IS NONE OR {apply_fields} THEN ${p}_worker ELSE ${p}_previous.worker END"
+        )
 
     target = f"type::record('task', ${p}_id)"
     assignments = ", ".join(set_clauses)
@@ -342,6 +344,14 @@ def build_task_upsert(event: dict, idx: int) -> tuple[str, dict]:
         f"LET ${p}_apply = {apply_state}; "
         f"UPSERT {target} SET {assignments}"
     )
+    if event.get("root_id"):
+        # Polling stores a task under its own id before ancestry arrives. Moving it to the real root
+        # leaves that workflow empty, so drop it rather than list a phantom single-task workflow.
+        query += (
+            f"; DELETE type::record('workflow', ${p}_previous.workflow_id ?? ${p}_workflow_id)"
+            f" WHERE ${p}_previous.workflow_id != NONE AND ${p}_previous.workflow_id != ${p}_workflow_id"
+            f" AND (SELECT VALUE id FROM task WHERE workflow_id = ${p}_previous.workflow_id LIMIT 1) = []"
+        )
     return query, params
 
 
