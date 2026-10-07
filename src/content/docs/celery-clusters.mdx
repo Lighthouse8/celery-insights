@@ -25,6 +25,23 @@ app.conf.result_extended = True
 app.conf.enable_utc = True
 ```
 
+## Task progress
+
+A running task can report progress with a custom `task-progress` event. The task page shows the latest report under Execution, and the workflow graph draws a bar under started tasks that report a total.
+
+```python
+@app.task(bind=True)
+def import_rows(self, rows):
+    for done, row in enumerate(rows, start=1):
+        import_row(row)
+        self.send_event("task-progress", current=done, total=len(rows), description="Importing rows")
+```
+
+- `current` is required and must be a non-negative number. `total` and `description` are optional; leave out `total` when it is unknown.
+- Each event is stored and pushed to open pages, so throttle it in tight loops, for example to one event every few seconds.
+- An older report never replaces a newer one. Progress from an earlier attempt is cleared when a retry starts.
+- Progress for a task Celery Insights has not recorded yet is ignored, but the raw event stays visible on the Live Events page.
+
 ## Standard RabbitMQ or Redis deployments
 
 If the cluster exposes one broker URL and one result backend URL, env vars are usually enough.

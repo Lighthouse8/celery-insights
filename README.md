@@ -35,6 +35,16 @@ Keep the rest of the event-related settings at their Celery defaults unless your
 
 [Celery event configuration documentation](https://docs.celeryq.dev/en/stable/userguide/configuration.html#events)
 
+## Task Progress
+
+Running tasks can report progress with a custom event. Celery Insights shows the latest report on the task page and in the workflow graph.
+
+```python
+self.send_event("task-progress", current=done, total=len(rows), description="Importing rows")
+```
+
+`current` is required; `total` and `description` are optional. Throttle the event in tight loops. See the [Celery clusters guide](src/content/docs/celery-clusters.mdx#task-progress) for details.
+
 ## Common Deployment Changes
 
 The default image assumes RabbitMQ as the broker and Redis as the result backend, both reachable from inside Docker via `host.docker.internal`.

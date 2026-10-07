@@ -12,7 +12,10 @@ import pytest
 from surrealdb import AsyncSurreal
 from surrealdb.connections.async_ws import AsyncWsSurrealConnection
 
+from pytest_mock import MockerFixture
+
 from events.ingester import (
+    SurrealDBIngester,
     build_task_upsert,
     build_worker_upsert,
     build_workflow_membership_upsert,
@@ -261,3 +264,50 @@ async def test_same_terminal_event_replaces_an_undated_terminal_observation(
     assert task["runtime"] == 1.5
     assert task["last_updated"] == event_at
     assert task["last_updated_observed"] is False
+
+
+@pytest.mark.asyncio
+async def test_progress_follows_latest_report_and_resets_on_new_attempt(
+    surreal_db: AsyncWsSurrealConnection, mocker: MockerFixture
+) -> None:
+    mocker.patch("events.ingester.get_db", return_value=surreal_db)
+    ingester = SurrealDBIngester(asyncio.Queue())
+
+    async def rows(sql: str) -> list[dict]:
+        return cast(list[dict], await surreal_db.query(sql))
+
+    async def ingest(*events: dict) -> dict:
+        ingester._buffer = list(events)
+        await ingester._flush()
+        assert ingester._buffer == [], "flush failed and re-queued the batch"
+        return (await rows("SELECT * FROM task:job"))[0]
+
+    def progress(timestamp: float, **fields: object) -> dict:
+        return {"type": "task-progress", "uuid": "job", "timestamp": timestamp, **fields}
+
+    job = await ingest(
+        {"type": "task-sent", "uuid": "job", "timestamp": 1700000000.0, "name": "reports.cache"},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000001.0},
+        progress(1700000003.0, current=4, total=10, description="Caching days"),
+        progress(1700000002.0, current=2, total=10),
+        progress(1700000004.0, current="x"),
+        {"type": "task-progress", "uuid": "unknown", "timestamp": 1700000004.0, "current": 1},
+    )
+    assert job["state"] == "STARTED"
+    assert job["progress"] == {
+        "current": 4,
+        "total": 10,
+        "description": "Caching days",
+        "updated_at": datetime.fromtimestamp(1700000003, tz=UTC),
+    }
+    assert await rows("SELECT * FROM task:unknown") == []
+    assert len(await rows("SELECT * FROM event WHERE event_type = 'task-progress'")) == 4
+
+    job = await ingest(
+        {"type": "task-retried", "uuid": "job", "timestamp": 1700000005.0},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000006.0},
+    )
+    assert job.get("progress") is None
+
+    job = await ingest(progress(1700000007.0, current=1))
+    assert job["progress"] == {"current": 1, "updated_at": datetime.fromtimestamp(1700000007, tz=UTC)}

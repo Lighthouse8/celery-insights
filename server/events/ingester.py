@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -8,6 +9,10 @@ from datetime import UTC, datetime
 from surrealdb_client import get_db
 
 logger = logging.getLogger(__name__)
+
+# Custom event a task sends with ``self.send_event("task-progress", current=..., total=..., description=...)``.
+PROGRESS_EVENT_TYPE = "task-progress"
+PROGRESS_DESCRIPTION_MAX_LENGTH = 200
 
 TERMINAL_EVENT_TYPES = frozenset({"task-succeeded", "task-failed", "task-revoked", "task-rejected"})
 TERMINAL_TASK_STATES = ("SUCCESS", "FAILURE", "REVOKED", "REJECTED", "IGNORED")
@@ -168,7 +173,14 @@ class SurrealDBIngester:
             event_type = event.get("type", "")
             category = event_type.split("-", 1)[0] if "-" in event_type else ""
 
-            if category == "task":
+            if event_type == PROGRESS_EVENT_TYPE:
+                # Progress never changes state or workflow membership, so it skips the summary recompute.
+                q, p = build_task_progress_update(event, i)
+                if q:
+                    queries.append(q)
+                    params.update(p)
+
+            elif category == "task":
                 q, p = build_task_upsert(event, i)
                 if q:
                     queries.append(q)
@@ -315,6 +327,13 @@ def build_task_upsert(event: dict, idx: int) -> tuple[str, dict]:
     if event_type == "task-failed" or event.get("exception") or event.get("traceback"):
         set_clauses.append("had_error = true")
 
+    if event_type == "task-started":
+        # A new attempt starts from zero: drop progress reported before it.
+        set_clauses.append(
+            f"progress = IF ${p}_previous.progress.updated_at < <datetime>${p}_ts"
+            f" THEN NONE ELSE ${p}_previous.progress END"
+        )
+
     # Fields follow an applied state even when it is older than an observed last_updated; `>=` lets
     # an event with the same timestamp still fill them.
     apply_fields = f"${p}_apply OR <datetime>${p}_ts >= ${p}_previous.last_updated"
@@ -353,6 +372,46 @@ def build_task_upsert(event: dict, idx: int) -> tuple[str, dict]:
             f" WHERE ${p}_previous.workflow_id != NONE AND ${p}_previous.workflow_id != ${p}_workflow_id"
             f" AND (SELECT VALUE id FROM task WHERE workflow_id = ${p}_previous.workflow_id LIMIT 1) = []"
         )
+    return query, params
+
+
+def _progress_number(value: object) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0:
+        return None
+    return value
+
+
+def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
+    """Build an UPDATE that records a task's latest reported progress.
+
+    UPDATE never creates a record, so progress for a task Celery Insights has not seen is dropped
+    instead of failing the batch on the schema's required task fields.
+    """
+    task_id = event.get("uuid")
+    timestamp = event.get("timestamp")
+    current = _progress_number(event.get("current"))
+    raw_total = event.get("total")
+    total = _progress_number(raw_total)
+
+    if not task_id or not timestamp or current is None or (raw_total is not None and not total):
+        return "", {}
+
+    p = f"pg{idx}"
+    params: dict = {f"{p}_id": task_id, f"{p}_ts": _epoch_to_iso(timestamp), f"{p}_current": current}
+    fields = [f"current: ${p}_current", f"updated_at: <datetime>${p}_ts"]
+    if total is not None:
+        params[f"{p}_total"] = total
+        fields.append(f"total: ${p}_total")
+    description = event.get("description")
+    if description is not None:
+        params[f"{p}_description"] = str(description)[:PROGRESS_DESCRIPTION_MAX_LENGTH]
+        fields.append(f"description: ${p}_description")
+
+    query = (
+        f"UPDATE type::record('task', ${p}_id) SET progress = "
+        f"IF progress.updated_at IS NONE OR <datetime>${p}_ts >= progress.updated_at"
+        f" THEN {{ {', '.join(fields)} }} ELSE progress END"
+    )
     return query, params
 
 
