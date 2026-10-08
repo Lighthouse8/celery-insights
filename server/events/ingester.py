@@ -415,8 +415,11 @@ def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
         )
     else:
         # Without an attempt, worker timestamps decide, which assumes the workers' clocks agree.
+        # A tagged report is never replaced by an untagged one, so the outcome doesn't depend
+        # on which of the two arrives first.
         accept = (
-            f"(progress.updated_at IS NONE OR <datetime>${p}_ts >= progress.updated_at)"
+            f"progress.attempt IS NONE"
+            f" AND (progress.updated_at IS NONE OR <datetime>${p}_ts >= progress.updated_at)"
             f" AND (last_started_at IS NONE OR <datetime>${p}_ts >= last_started_at)"
         )
 

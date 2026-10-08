@@ -177,13 +177,13 @@ describe("keepNewerProgress across retries", () => {
     expect(keepNewerProgress(fresh({ retries: 1 }), known(failedAttempt)).members[0].progress).toBeUndefined()
   })
 
-  it("orders a tagged report and an untagged one by time, as the ingester does", () => {
+  it("lets a tagged report beat an untagged one in either order, as the ingester does", () => {
     const tagged = { ...progress, current: 1, attempt: 0, updated_at: "2026-10-08T10:00:25Z" }
-    // After a reconnect the snapshot holds the newer untagged report the ingester kept.
-    const newerUntagged = fresh({ progress: { ...progress, current: 9, updated_at: "2026-10-08T10:00:30Z" } })
-    const olderUntagged = fresh({ progress: { ...progress, current: 9, updated_at: "2026-10-08T10:00:20Z" } })
+    const untagged = { ...progress, current: 9, updated_at: "2026-10-08T10:00:30Z" }
 
-    expect(keepNewerProgress(newerUntagged, known(tagged)).members[0].progress?.current).toBe(9)
-    expect(keepNewerProgress(olderUntagged, known(tagged)).members[0].progress).toBe(tagged)
+    // The tagged patch landed while a snapshot holding the untagged report was in flight.
+    expect(keepNewerProgress(fresh({ progress: untagged }), known(tagged)).members[0].progress).toBe(tagged)
+    // A cached untagged report never replaces the snapshot's tagged one, newer or not.
+    expect(keepNewerProgress(fresh({ progress: tagged }), known(untagged)).members[0].progress).toBe(tagged)
   })
 })

@@ -191,6 +191,9 @@ async def test_progress_follows_latest_report_and_resets_on_new_attempt(mocker: 
         assert job["progress"]["attempt"] == 2
         job = await ingest(progress(1700000026.0, current=2, total=10, attempt=2))
         assert job["progress"]["current"] == 2
+        # Once the task reports its attempt, an untagged report never replaces it, newer or not.
+        job = await ingest(progress(1700000099.0, current=7, total=10))
+        assert job["progress"]["current"] == 2
 
         # The next retry's task-received comes from a worker whose clock is behind: it still
         # raises retries, so a late report from attempt 2 is ignored even with no attempt 3 report.
