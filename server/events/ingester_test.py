@@ -163,18 +163,23 @@ class TestBuildTaskProgressUpdate:
             {"current": True},
             {"current": -1},
             {"current": float("nan")},
-            {"current": 1, "total": 0},
-            {"current": 1, "total": "10"},
             {"current": float("inf")},
             {"current": 10**400},
             {"current": 2**64},
-            {"current": 1, "total": 10**400},
-            {"current": 1, "total": 2**64},
         ],
     )
     def test_rejects_invalid_progress(self, fields):
         event = {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, **fields}
         assert build_task_progress_update(event, 0) == ("", {})
+
+    @pytest.mark.parametrize("total", [0, -1, "10", float("nan"), 10**400, 2**64])
+    def test_invalid_total_keeps_the_count(self, total):
+        query, params = build_task_progress_update(
+            {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, "current": 5, "total": total}, 0
+        )
+
+        assert "total" not in query
+        assert params["pg0_current"] == 5
 
     def test_task_started_resets_older_progress(self):
         query, _ = build_task_upsert({"type": "task-started", "uuid": "abc", "timestamp": 1700000000.0}, 0)

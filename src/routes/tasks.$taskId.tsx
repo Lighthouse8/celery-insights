@@ -6,13 +6,13 @@ import TaskAlerts from "@components/task/alerts/task-alerts"
 import TaskAvatar from "@components/task/task-avatar"
 import TaskLifetimeChart from "@components/task/task-lifetime-chart"
 import TaskPageHeader from "@components/task/task-page-header"
-import TaskProgress from "@components/task/task-progress"
+import TaskProgress, { progressLabel } from "@components/task/task-progress"
 import { Skeleton } from "@components/ui/skeleton"
 import { useTaskWorkflow } from "@hooks/use-task-workflow"
 import { useNow } from "@hooks/use-now"
 import { formatDurationExact } from "@utils/format-duration-exact"
 import { computeTaskPhases } from "@utils/task-phases"
-import { parseTask, parseWorkflow, TaskState, type Task } from "@/types/surreal-records"
+import { parseTask, parseWorkflow, type Task } from "@/types/surreal-records"
 import { useTourChangeStepOnLoad } from "@stores/use-tour-store"
 import WorkflowGraph, { WorkflowChartType } from "@components/workflow/workflow-graph"
 import React, { useMemo } from "react"
@@ -72,7 +72,7 @@ const ExecutionPanel = ({ task }: { task: Task }) => {
         {task.progress && (
           <div className="md:col-span-2">
             <DetailItem
-              label={task.state === TaskState.STARTED ? "Progress" : "Last progress"}
+              label={progressLabel(task.state)}
               value={<TaskProgress progress={task.progress} />}
               description={`Last reported ${task.progress.updated_at.toLocaleString()}`}
             />

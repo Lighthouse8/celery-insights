@@ -65,6 +65,7 @@ DEFINE FIELD OVERWRITE progress.current ON task TYPE number;
 DEFINE FIELD OVERWRITE progress.total ON task TYPE option<number>;
 DEFINE FIELD OVERWRITE progress.description ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE progress.updated_at ON task TYPE datetime;
+-- Latest attempt's start (started_at keeps the first); rejects late progress from earlier attempts.
 DEFINE FIELD OVERWRITE last_started_at ON task TYPE option<datetime>;
 
 DEFINE INDEX OVERWRITE idx_task_state ON task FIELDS state;

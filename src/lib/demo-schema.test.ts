@@ -59,6 +59,12 @@ describe("DEMO_SCHEMA", () => {
       "result_truncated",
       "exception",
       "traceback",
+      "progress",
+      "progress.current",
+      "progress.total",
+      "progress.description",
+      "progress.updated_at",
+      "last_started_at",
     ]
     for (const field of expectedFields) {
       expect(DEMO_SCHEMA).toContain(`DEFINE FIELD OVERWRITE ${field} ON task`)

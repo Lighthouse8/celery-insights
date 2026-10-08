@@ -20,6 +20,32 @@ const EMPTY_RESULT: TaskWorkflowSnapshot = {
   members: [],
 }
 
+const withoutProgress = ({ progress: _progress, ...rest }: SurrealTask) => JSON.stringify(rest)
+
+/**
+ * Patch a task whose only change is its progress into the snapshot; undefined
+ * when anything else changed or the task isn't in it. Every progress report is a
+ * live change, so re-querying the whole workflow for each one would cost a
+ * snapshot query per report on every open page.
+ */
+export function applyProgressOnlyChange(
+  snapshot: TaskWorkflowSnapshot,
+  record: SurrealTask,
+): TaskWorkflowSnapshot | undefined {
+  const recordId = extractId(record.id)
+  const isRecord = (task: SurrealTask | null) => !!task && extractId(task.id) === recordId
+  const memberIndex = snapshot.members.findIndex(isRecord)
+  const known = [snapshot.task, snapshot.members[memberIndex]].filter((task) => isRecord(task ?? null))
+  if (!known.length || known.some((task) => withoutProgress(task as SurrealTask) !== withoutProgress(record))) {
+    return undefined
+  }
+  return {
+    ...snapshot,
+    task: isRecord(snapshot.task) ? record : snapshot.task,
+    members: snapshot.members.map((member, index) => (index === memberIndex ? record : member)),
+  }
+}
+
 export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
   const { db, status } = useSurrealDB()
   const [data, setData] = useState<TaskWorkflowSnapshot>(EMPTY_RESULT)
@@ -27,6 +53,7 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
   const [error, setError] = useState<Error | null>(null)
   const subscriptionRef = useRef<LiveSubscription | null>(null)
   const workflowIdRef = useRef<string | null>(null)
+  const snapshotRef = useRef<TaskWorkflowSnapshot>(EMPTY_RESULT)
 
   const fetchSnapshot = useCallback(async () => {
     if (!taskId) {
@@ -60,6 +87,7 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         members: Array.isArray(result?.members) ? result.members : [],
       }
       workflowIdRef.current = next.task?.workflow_id || next.task?.root_id || next.task?.id?.toString() || taskId
+      snapshotRef.current = next
       setData(next)
       setError(null)
     } catch (err) {
@@ -89,7 +117,13 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         const workflowId = workflowIdRef.current
         const matchesWorkflow = !!workflowId && (record.workflow_id || record.root_id || recordId) === workflowId
         if (recordId === taskId || matchesWorkflow) {
-          void fetchSnapshot()
+          const patched = message.action === "UPDATE" ? applyProgressOnlyChange(snapshotRef.current, record) : undefined
+          if (patched) {
+            snapshotRef.current = patched
+            setData(patched)
+          } else {
+            void fetchSnapshot()
+          }
         }
       })
     }

@@ -373,10 +373,10 @@ def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
     task_id = event.get("uuid")
     timestamp = event.get("timestamp")
     current = _progress_number(event.get("current"))
-    raw_total = event.get("total")
-    total = _progress_number(raw_total)
+    # An unusable total (zero, negative, not a number) drops only the total, not the report.
+    total = _progress_number(event.get("total")) or None
 
-    if not task_id or not timestamp or current is None or (raw_total is not None and not total):
+    if not task_id or not timestamp or current is None:
         return "", {}
 
     p = f"pg{idx}"
