@@ -25,6 +25,29 @@ const EMPTY_RESULT: TaskWorkflowSnapshot = {
 
 const withoutProgress = ({ progress: _progress, ...rest }: SurrealTask) => JSON.stringify(rest)
 
+const timeOf = (value: unknown) => (value ? new Date(String(value)).getTime() : Number.NEGATIVE_INFINITY)
+
+/**
+ * Keep progress newer than a fresh snapshot's: a progress patch can land while
+ * that snapshot's query is in flight, and nothing would bring it back. The same
+ * rule as the ingester: newer than the stored report and not older than the
+ * task's latest start (a retry clears the earlier attempt's progress).
+ */
+export function keepNewerProgress(next: TaskWorkflowSnapshot, known: TaskWorkflowSnapshot): TaskWorkflowSnapshot {
+  const knownProgress = new Map<string, SurrealTask["progress"]>()
+  for (const task of [known.task, ...known.members]) {
+    if (task?.progress) knownProgress.set(extractId(task.id), task.progress)
+  }
+  const merge = (task: SurrealTask): SurrealTask => {
+    const progress = knownProgress.get(extractId(task.id))
+    if (!progress) return task
+    const reportedAt = timeOf(progress.updated_at)
+    const isNewer = reportedAt > timeOf(task.progress?.updated_at) && reportedAt >= timeOf(task.last_started_at)
+    return isNewer ? { ...task, progress } : task
+  }
+  return { ...next, task: next.task && merge(next.task), members: next.members.map(merge) }
+}
+
 /**
  * Patch a task whose only change is its progress into the snapshot; undefined
  * when anything else changed or the task isn't in it. Every progress report is a
@@ -90,8 +113,9 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         members: Array.isArray(result?.members) ? result.members : [],
       }
       workflowIdRef.current = next.task?.workflow_id || next.task?.root_id || next.task?.id?.toString() || taskId
-      snapshotRef.current = next
-      setData(next)
+      const merged = keepNewerProgress(next, snapshotRef.current)
+      snapshotRef.current = merged
+      setData(merged)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err : new Error(String(err)))
