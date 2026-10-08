@@ -340,6 +340,11 @@ def build_task_upsert(event: dict, idx: int) -> tuple[str, dict]:
         if value is not None:
             pname = f"{p}_{db_field}"
             params[pname] = value if isinstance(value, int | float) else str(value)
+            if db_field == "retries" and isinstance(value, int) and not isinstance(value, bool):
+                # Retries only go up, and a retry's task-received can come from a worker whose
+                # clock is behind; progress ordering by attempt needs the latest count.
+                set_clauses.append(f"retries = math::max([${p}_previous.retries ?? 0, ${pname}])")
+                continue
             set_clauses.append(
                 f"{db_field} = IF ${p}_previous.last_updated IS NONE"
                 f" OR <datetime>${p}_ts >= ${p}_previous.last_updated"

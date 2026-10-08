@@ -49,6 +49,8 @@ const isNewerProgress = (known: SurrealTaskProgress, task: SurrealTask): boolean
     // Attempts order reports regardless of worker clocks.
     if (known.attempt < (task.retries ?? 0)) return false
     const fresh = task.progress
+    // A tagged report replaces an untagged one, as in the ingester.
+    if (fresh && typeof fresh.attempt !== "number") return true
     if (typeof fresh?.attempt === "number" && fresh.attempt !== known.attempt) return known.attempt > fresh.attempt
     return !fresh || microsOf(known.updated_at) > microsOf(fresh.updated_at)
   }

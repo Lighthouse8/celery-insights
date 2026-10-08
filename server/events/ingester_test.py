@@ -119,6 +119,14 @@ class TestBuildTaskUpsert:
         assert query == ""
         assert params == {}
 
+    def test_retries_only_go_up(self):
+        query, params = build_task_upsert(
+            {"type": "task-received", "uuid": "abc", "timestamp": 1700000000.0, "retries": 2}, 0
+        )
+
+        assert "retries = math::max([$t0_previous.retries ?? 0, $t0_retries])" in query
+        assert params["t0_retries"] == 2
+
     def test_unique_param_prefix_per_index(self):
         _, params_0 = build_task_upsert({"type": "task-sent", "uuid": "a", "timestamp": 1700000000.0}, 0)
         _, params_7 = build_task_upsert({"type": "task-sent", "uuid": "b", "timestamp": 1700000000.0}, 7)

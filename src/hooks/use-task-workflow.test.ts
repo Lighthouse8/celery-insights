@@ -176,4 +176,11 @@ describe("keepNewerProgress across retries", () => {
     expect(keepNewerProgress(nextAttempt, known(failedAttempt)).members[0].progress?.attempt).toBe(1)
     expect(keepNewerProgress(fresh({ retries: 1 }), known(failedAttempt)).members[0].progress).toBeUndefined()
   })
+
+  it("lets a tagged report replace an untagged one, whatever their clocks say", () => {
+    const tagged = { ...progress, current: 1, attempt: 0, updated_at: "2026-10-08T10:00:25Z" }
+    const untagged = fresh({ progress: { ...progress, current: 9, updated_at: "2026-10-08T10:00:30Z" } })
+
+    expect(keepNewerProgress(untagged, known(tagged)).members[0].progress).toBe(tagged)
+  })
 })
