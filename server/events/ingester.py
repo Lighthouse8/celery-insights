@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 # Custom event a task sends with ``self.send_event("task-progress", current=..., total=..., description=...)``.
 PROGRESS_EVENT_TYPE = "task-progress"
 PROGRESS_DESCRIPTION_MAX_LENGTH = 200
+# Larger numbers lose precision in SurrealDB and JavaScript, and math.isfinite overflows on huge ints.
+PROGRESS_MAX_NUMBER = 2**53
 
 TERMINAL_EVENT_TYPES = frozenset({"task-succeeded", "task-failed", "task-revoked", "task-rejected"})
 TERMINAL_TASK_STATES = ("SUCCESS", "FAILURE", "REVOKED", "REJECTED", "IGNORED")
@@ -328,10 +330,16 @@ def build_task_upsert(event: dict, idx: int) -> tuple[str, dict]:
         set_clauses.append("had_error = true")
 
     if event_type == "task-started":
-        # A new attempt starts from zero: drop progress reported before it.
+        # A new attempt starts from zero: drop progress reported before it. started_at keeps the
+        # first attempt's start, so the latest one is kept separately to reject late reports.
         set_clauses.append(
             f"progress = IF ${p}_previous.progress.updated_at < <datetime>${p}_ts"
             f" THEN NONE ELSE ${p}_previous.progress END"
+        )
+        set_clauses.append(
+            f"last_started_at = IF ${p}_previous.last_started_at IS NONE"
+            f" OR <datetime>${p}_ts > ${p}_previous.last_started_at"
+            f" THEN <datetime>${p}_ts ELSE ${p}_previous.last_started_at END"
         )
 
     # Fields follow an applied state even when it is older than an observed last_updated; `>=` lets
@@ -376,9 +384,11 @@ def build_task_upsert(event: dict, idx: int) -> tuple[str, dict]:
 
 
 def _progress_number(value: object) -> int | float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0:
+    if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    return value
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value if 0 <= value <= PROGRESS_MAX_NUMBER else None
 
 
 def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
@@ -409,7 +419,8 @@ def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
 
     query = (
         f"UPDATE type::record('task', ${p}_id) SET progress = "
-        f"IF progress.updated_at IS NONE OR <datetime>${p}_ts >= progress.updated_at"
+        f"IF (progress.updated_at IS NONE OR <datetime>${p}_ts >= progress.updated_at)"
+        f" AND (last_started_at IS NONE OR <datetime>${p}_ts >= last_started_at)"
         f" THEN {{ {', '.join(fields)} }} ELSE progress END"
     )
     return query, params

@@ -309,5 +309,9 @@ async def test_progress_follows_latest_report_and_resets_on_new_attempt(
     )
     assert job.get("progress") is None
 
+    # A report from the first attempt that arrives after the retry started stays cleared.
+    job = await ingest(progress(1700000005.5, current=9, total=10))
+    assert job.get("progress") is None
+
     job = await ingest(progress(1700000007.0, current=1))
     assert job["progress"] == {"current": 1, "updated_at": datetime.fromtimestamp(1700000007, tz=UTC)}

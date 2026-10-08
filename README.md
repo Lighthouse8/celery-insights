@@ -43,7 +43,7 @@ Running tasks can report progress with a custom event. Celery Insights shows the
 self.send_event("task-progress", current=done, total=len(rows), description="Importing rows")
 ```
 
-`current` is required; `total` and `description` are optional. Throttle the event in tight loops. See the [Celery clusters guide](src/content/docs/celery-clusters.mdx#task-progress) for details.
+`current` is required; `total` and `description` are optional. Throttle the event in tight loops, for example to one event every few seconds. A finished task keeps its last report. See the [Celery clusters guide](src/content/docs/celery-clusters.mdx#task-progress) for details.
 
 ## Common Deployment Changes
 

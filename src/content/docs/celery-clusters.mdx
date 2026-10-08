@@ -30,15 +30,22 @@ app.conf.enable_utc = True
 A running task can report progress with a custom `task-progress` event. The task page shows the latest report under Execution, and the workflow graph draws a bar under started tasks that report a total.
 
 ```python
+import time
+
 @app.task(bind=True)
 def import_rows(self, rows):
+    reported_at = 0.0
     for done, row in enumerate(rows, start=1):
         import_row(row)
-        self.send_event("task-progress", current=done, total=len(rows), description="Importing rows")
+        # One event every few seconds is plenty; each one is a database write and a live update.
+        if done == len(rows) or time.monotonic() - reported_at >= 5:
+            self.send_event("task-progress", current=done, total=len(rows), description="Importing rows")
+            reported_at = time.monotonic()
 ```
 
 - `current` is required and must be a non-negative number. `total` and `description` are optional; leave out `total` when it is unknown.
-- Each event is stored and pushed to open pages, so throttle it in tight loops, for example to one event every few seconds.
+- Each event is stored and pushed to open pages, so throttle it in tight loops, as the example does.
+- A finished task keeps its last report, shown as "Last progress", so you can see where a failed task stopped.
 - An older report never replaces a newer one. Progress from an earlier attempt is cleared when a retry starts.
 - Progress for a task Celery Insights has not recorded yet is ignored, but the raw event stays visible on the Live Events page.
 
