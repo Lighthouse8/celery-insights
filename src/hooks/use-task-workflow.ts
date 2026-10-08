@@ -52,12 +52,12 @@ const isNewerProgress = (known: SurrealTaskProgress, task: SurrealTask): boolean
     // Attempts order reports regardless of worker clocks.
     if (known.attempt < (task.retries ?? 0)) return false
     const fresh = task.progress
-    // Against an untagged report the ingester orders by time either way (an untagged
-    // report replaces a tagged one when it is newer), so the page does too.
-    if (fresh && typeof fresh.attempt !== "number") return microsOf(known.updated_at) > microsOf(fresh.updated_at)
+    // A tagged report beats an untagged one either way, as in the ingester.
+    if (fresh && typeof fresh.attempt !== "number") return true
     if (typeof fresh?.attempt === "number" && fresh.attempt !== known.attempt) return known.attempt > fresh.attempt
     return !fresh || microsOf(known.updated_at) > microsOf(fresh.updated_at)
   }
+  if (typeof task.progress?.attempt === "number") return false
   const reportedAt = microsOf(known.updated_at)
   if (reportedAt < microsOf(task.last_started_at)) return false
   // An empty fresh report after a later state change (task-retried clears progress) stays empty.
