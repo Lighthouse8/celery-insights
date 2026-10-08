@@ -53,6 +53,7 @@ export interface SurrealTask {
   exception?: string | null
   traceback?: string | null
   progress?: SurrealTaskProgress | null
+  last_started_at?: string | null
 }
 
 export interface SurrealWorkflow {
