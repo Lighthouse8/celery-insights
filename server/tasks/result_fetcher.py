@@ -88,8 +88,11 @@ def _build_task_meta_upsert(task_id: str, meta: dict) -> tuple[str, dict]:
         *(
             f"{field} = IF $meta_apply_state THEN ${field} ?? $meta_previous.{field} "
             f"ELSE $meta_previous.{field} ?? ${field} END"
-            for field in ("type", "args", "kwargs", "worker", "retries", "routing_key")
+            for field in ("type", "args", "kwargs", "worker", "routing_key")
         ),
+        # Retries only go up; metadata from a failed attempt must not lower the count events raised.
+        "retries = IF $retries = NONE THEN $meta_previous.retries"
+        " ELSE math::max([$meta_previous.retries ?? 0, $retries]) END",
         "workflow_id = $meta_previous.workflow_id ?? $workflow_id",
         "last_updated = IF $meta_apply_state THEN $meta_timestamp ELSE $meta_previous.last_updated END",
         "last_updated_observed = IF $meta_apply_state THEN $meta_observed "

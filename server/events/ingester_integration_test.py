@@ -347,6 +347,12 @@ async def test_progress_follows_latest_report_and_resets_on_new_attempt(
         {"type": "task-received", "uuid": "job", "timestamp": 1700000035.0, "retries": 3},
     )
     assert job["retries"] == 3
+    # The result-backend poller then reads the failed attempt's metadata: it can't lower retries.
+    query, bindings = _build_task_meta_upsert(
+        "job", {"status": "RETRY", "retries": 0, "date_done": "2023-11-14T22:14:00Z"}
+    )
+    await surreal_db.query(query, bindings)
+    assert (await rows("SELECT * FROM task:job"))[0]["retries"] == 3
     job = await ingest(progress(1700000041.0, current=8, total=10, attempt=2))
     assert job["progress"]["attempt"] == 2
     assert job["progress"]["current"] == 2
