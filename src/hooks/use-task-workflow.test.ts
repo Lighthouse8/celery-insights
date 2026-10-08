@@ -43,6 +43,13 @@ describe("applyProgressOnlyChange", () => {
     })
   })
 
+  it("matches a live record whose keys come in another order", () => {
+    const { progress: _progress, ...fields } = task("child", { progress })
+    const reordered = Object.fromEntries(Object.entries({ ...fields, progress }).reverse()) as unknown as SurrealTask
+
+    expect(applyProgressOnlyChange(snapshot, reordered)?.members[1]).toBe(reordered)
+  })
+
   it("leaves any other change to a fresh snapshot", () => {
     expect(applyProgressOnlyChange(snapshot, task("child", { progress, state: "SUCCESS" }))).toBeUndefined()
     expect(applyProgressOnlyChange(snapshot, task("unknown", { progress }))).toBeUndefined()

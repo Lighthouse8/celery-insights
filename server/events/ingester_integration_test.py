@@ -167,3 +167,14 @@ async def test_progress_follows_latest_report_and_resets_on_new_attempt(mocker: 
 
         job = await ingest(progress(1700000007.0, current=1))
         assert job["progress"] == {"current": 1, "updated_at": datetime.fromtimestamp(1700000007, tz=UTC)}
+
+        # The next attempt runs on a worker whose clock is behind the first one's. task-retried
+        # still clears the first attempt's report, and the new attempt's own reports count.
+        job = await ingest(
+            progress(1700000020.0, current=7, total=10),
+            {"type": "task-retried", "uuid": "job", "timestamp": 1700000021.0},
+            {"type": "task-started", "uuid": "job", "timestamp": 1700000018.0},
+        )
+        assert job.get("progress") is None
+        job = await ingest(progress(1700000019.0, current=1, total=10))
+        assert job["progress"]["current"] == 1

@@ -46,7 +46,7 @@ def import_rows(self, rows):
 - `current` is required and must be a number from 0 to 2^53; a report without a usable `current` is ignored. `total` and `description` are optional; leave out `total` when it is unknown. An unusable `total` (zero, negative, not a number) is dropped and the count kept.
 - Each event is stored and pushed to open pages, so throttle it in tight loops, as the example does.
 - A finished task keeps its last report, shown as "Last progress", so you can see where a failed task stopped.
-- An older report never replaces a newer one. Progress from an earlier attempt is cleared when a retry starts.
+- An older report never replaces a newer one. When an attempt fails and is retried, its progress is cleared (on `task-retried`, and again on the next `task-started`), and late reports from it are ignored.
 - Progress for a task Celery Insights has not recorded yet is ignored, but the raw event stays visible on the Live Events page.
 
 ## Standard RabbitMQ or Redis deployments
