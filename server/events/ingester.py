@@ -332,9 +332,11 @@ def build_task_upsert(event: dict, idx: int) -> tuple[str, dict]:
     if event_type in ("task-retried", "task-started"):
         # A retry starts from zero, so both events drop progress reported before them. task-retried
         # comes from the failed attempt's own worker, whose clock orders that attempt's reports even
-        # when the next attempt's worker clock runs behind.
+        # when the next attempt's worker clock runs behind. Reports that carry their attempt are
+        # ordered by it instead, so a delayed retry event can't clear the next attempt's progress.
         set_clauses.append(
-            f"progress = IF ${p}_previous.progress.updated_at < <datetime>${p}_ts"
+            f"progress = IF ${p}_previous.progress.attempt IS NONE"
+            f" AND ${p}_previous.progress.updated_at < <datetime>${p}_ts"
             f" THEN NONE ELSE ${p}_previous.progress END"
         )
     if event_type == "task-started":
@@ -421,11 +423,28 @@ def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
         params[f"{p}_description"] = str(description)[:PROGRESS_DESCRIPTION_MAX_LENGTH]
         fields.append(f"description: ${p}_description")
 
+    attempt = event.get("attempt")
+    if isinstance(attempt, int) and not isinstance(attempt, bool) and 0 <= attempt <= PROGRESS_MAX_NUMBER:
+        # The attempt (the task's retry count) orders reports across workers whose clocks
+        # disagree: a later attempt always wins, time only orders reports within one attempt,
+        # and a report from an attempt before the task's current retries is ignored.
+        params[f"{p}_attempt"] = attempt
+        fields.append(f"attempt: ${p}_attempt")
+        accept = (
+            f"${p}_attempt >= (retries ?? 0) AND (progress.attempt IS NONE"
+            f" OR ${p}_attempt > progress.attempt"
+            f" OR (${p}_attempt = progress.attempt AND <datetime>${p}_ts >= progress.updated_at))"
+        )
+    else:
+        # Without an attempt, worker timestamps decide, which assumes the workers' clocks agree.
+        accept = (
+            f"(progress.updated_at IS NONE OR <datetime>${p}_ts >= progress.updated_at)"
+            f" AND (last_started_at IS NONE OR <datetime>${p}_ts >= last_started_at)"
+        )
+
     query = (
         f"UPDATE type::record('task', ${p}_id) SET progress = "
-        f"IF (progress.updated_at IS NONE OR <datetime>${p}_ts >= progress.updated_at)"
-        f" AND (last_started_at IS NONE OR <datetime>${p}_ts >= last_started_at)"
-        f" THEN {{ {', '.join(fields)} }} ELSE progress END"
+        f"IF {accept} THEN {{ {', '.join(fields)} }} ELSE progress END"
     )
     return query, params
 

@@ -221,6 +221,25 @@ class TestBuildTaskProgressUpdate:
         event = {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, **fields}
         assert build_task_progress_update(event, 0) == ("", {})
 
+    def test_attempt_orders_reports_across_workers(self):
+        query, params = build_task_progress_update(
+            {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, "current": 1, "attempt": 2}, 0
+        )
+
+        assert params["pg0_attempt"] == 2
+        assert "attempt: $pg0_attempt" in query
+        assert "$pg0_attempt >= (retries ?? 0)" in query
+        assert "last_started_at" not in query
+
+    @pytest.mark.parametrize("attempt", [-1, True, "1", 1.5, 2**64])
+    def test_unusable_attempt_falls_back_to_timestamps(self, attempt):
+        query, params = build_task_progress_update(
+            {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, "current": 1, "attempt": attempt}, 0
+        )
+
+        assert "pg0_attempt" not in params
+        assert "last_started_at IS NONE" in query
+
     @pytest.mark.parametrize("total", [0, -1, "10", float("nan"), 10**400, 2**64])
     def test_invalid_total_keeps_the_count(self, total):
         query, params = build_task_progress_update(
@@ -232,11 +251,14 @@ class TestBuildTaskProgressUpdate:
 
     def test_task_started_resets_older_progress(self):
         query, _ = build_task_upsert({"type": "task-started", "uuid": "abc", "timestamp": 1700000000.0}, 0)
-        assert "progress = IF $t0_previous.progress.updated_at < <datetime>$t0_ts THEN NONE" in query
+        assert (
+            "progress = IF $t0_previous.progress.attempt IS NONE"
+            " AND $t0_previous.progress.updated_at < <datetime>$t0_ts THEN NONE"
+        ) in query
         assert "last_started_at = IF $t0_previous.last_started_at IS NONE" in query
 
         query, _ = build_task_upsert({"type": "task-retried", "uuid": "abc", "timestamp": 1700000000.0}, 0)
-        assert "progress = IF $t0_previous.progress.updated_at < <datetime>$t0_ts THEN NONE" in query
+        assert "AND $t0_previous.progress.updated_at < <datetime>$t0_ts THEN NONE" in query
         assert "last_started_at" not in query
 
         query, _ = build_task_upsert({"type": "task-received", "uuid": "abc", "timestamp": 1700000000.0}, 0)

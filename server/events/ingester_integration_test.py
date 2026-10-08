@@ -326,3 +326,16 @@ async def test_progress_follows_latest_report_and_resets_on_new_attempt(
     assert job.get("progress") is None
     job = await ingest(progress(1700000019.0, current=1, total=10))
     assert job["progress"]["current"] == 1
+
+    # With the attempt in each report, clocks no longer decide across workers: the next
+    # attempt's worker runs behind, and a delayed report from the failed attempt, stamped
+    # later than the new attempt's reports, is still ignored.
+    job = await ingest(
+        {"type": "task-received", "uuid": "job", "timestamp": 1700000030.0, "retries": 2},
+        progress(1700000025.0, current=1, total=10, attempt=2),
+        progress(1700000032.0, current=9, total=10, attempt=1),
+    )
+    assert job["progress"]["current"] == 1
+    assert job["progress"]["attempt"] == 2
+    job = await ingest(progress(1700000026.0, current=2, total=10, attempt=2))
+    assert job["progress"]["current"] == 2
