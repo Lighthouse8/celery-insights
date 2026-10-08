@@ -339,3 +339,14 @@ async def test_progress_follows_latest_report_and_resets_on_new_attempt(
     assert job["progress"]["attempt"] == 2
     job = await ingest(progress(1700000026.0, current=2, total=10, attempt=2))
     assert job["progress"]["current"] == 2
+
+    # The next retry's task-received comes from a worker whose clock is behind: it still
+    # raises retries, so a late report from attempt 2 is ignored even with no attempt 3 report.
+    job = await ingest(
+        {"type": "task-retried", "uuid": "job", "timestamp": 1700000040.0},
+        {"type": "task-received", "uuid": "job", "timestamp": 1700000035.0, "retries": 3},
+    )
+    assert job["retries"] == 3
+    job = await ingest(progress(1700000041.0, current=8, total=10, attempt=2))
+    assert job["progress"]["attempt"] == 2
+    assert job["progress"]["current"] == 2
