@@ -149,3 +149,31 @@ describe("useTaskWorkflow", () => {
     await waitFor(() => expect(result.current.members[1]?.progress).toEqual(progress))
   })
 })
+
+describe("keepNewerProgress across retries", () => {
+  const known = (report: SurrealTask["progress"]) => ({
+    task: null,
+    workflow: null,
+    members: [task("child", { progress: report })],
+  })
+  const fresh = (overrides: Partial<SurrealTask>) => ({
+    task: null,
+    workflow: null,
+    members: [task("child", overrides)],
+  })
+
+  it("keeps a retry's cleared progress cleared", () => {
+    const report = { ...progress, updated_at: "2026-10-08T10:00:20Z" }
+    const retried = fresh({ state: "RETRY", last_updated: "2026-10-08T10:00:21Z" })
+
+    expect(keepNewerProgress(retried, known(report)).members[0].progress).toBeUndefined()
+  })
+
+  it("orders reports by attempt, not by worker clocks", () => {
+    const failedAttempt = { ...progress, attempt: 0, updated_at: "2026-10-08T10:00:30Z" }
+    const nextAttempt = fresh({ retries: 1, progress: { ...progress, attempt: 1, updated_at: "2026-10-08T10:00:25Z" } })
+
+    expect(keepNewerProgress(nextAttempt, known(failedAttempt)).members[0].progress?.attempt).toBe(1)
+    expect(keepNewerProgress(fresh({ retries: 1 }), known(failedAttempt)).members[0].progress).toBeUndefined()
+  })
+})

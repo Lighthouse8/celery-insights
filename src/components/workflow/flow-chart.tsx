@@ -106,6 +106,16 @@ export const getFlowGraph = (
 export const getLayoutKey = (tasks: Task[], rootTaskId: string): string =>
   [rootTaskId, ...tasks.map((task) => `${task.id}<${task.parent_id ?? ""}`).sort()].join("|")
 
+/** Swap in each node's latest task without moving it. */
+export const refreshNodeData = (nodes: Node[], tasks: Task[]): Node[] => {
+  const tasksById = new Map(tasks.map((task) => [task.id, task]))
+  return nodes.map((node) => {
+    // Duplicated nodes get a "-replaced" id but keep their task in data.
+    const task = tasksById.get((node.data as unknown as Task).id)
+    return task && task !== (node.data as unknown) ? { ...node, data: task as Task & Record<string, unknown> } : node
+  })
+}
+
 const FOCUS_ZOOM = 1
 const ZOOM_ANIMATION_SPEED = 1000
 
@@ -171,17 +181,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
   }, [layoutKey, setNodes, setEdges, flow])
 
   // Any other change only refreshes node data, keeping each node where it is.
-  useEffect(() => {
-    const tasksById = new Map(tasks.map((task) => [task.id, task]))
-    setNodes((current) =>
-      current.map((node) => {
-        const task = tasksById.get(node.id.replace(/-replaced$/, ""))
-        return task && task !== (node.data as unknown)
-          ? { ...node, data: task as Task & Record<string, unknown> }
-          : node
-      }),
-    )
-  }, [tasks, setNodes])
+  useEffect(() => setNodes((current) => refreshNodeData(current, tasks)), [tasks, setNodes])
 
   useEffect(() => {
     if (!currentTaskId) fitView()

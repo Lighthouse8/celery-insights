@@ -19,6 +19,8 @@ export interface SurrealTaskProgress {
   total?: number | null
   description?: string | null
   updated_at: string
+  /** The task's retry count when it reported, if the task sent it. */
+  attempt?: number | null
 }
 
 /** Task record as stored in SurrealDB */
@@ -290,14 +292,16 @@ export const parseTask = (raw: SurrealTask): Task => ({
   result_truncated: raw.result_truncated,
   exception: raw.exception || undefined,
   traceback: raw.traceback || undefined,
-  progress: raw.progress
-    ? {
-        current: raw.progress.current,
-        total: raw.progress.total ?? undefined,
-        description: raw.progress.description || undefined,
-        updated_at: isoToDate(raw.progress.updated_at) || new Date(),
-      }
-    : undefined,
+  // A report from an attempt before the current one belongs to a failed attempt.
+  progress:
+    raw.progress && !(typeof raw.progress.attempt === "number" && raw.progress.attempt < (raw.retries ?? 0))
+      ? {
+          current: raw.progress.current,
+          total: raw.progress.total ?? undefined,
+          description: raw.progress.description || undefined,
+          updated_at: isoToDate(raw.progress.updated_at) || new Date(),
+        }
+      : undefined,
 })
 
 export const parseWorkflow = (raw: SurrealWorkflow): Workflow => ({

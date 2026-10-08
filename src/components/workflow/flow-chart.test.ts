@@ -1,6 +1,6 @@
 import { createTask } from "@test-fixtures"
 import { TaskState } from "@/types/surreal-records"
-import { getFlowGraph, getLayoutKey } from "./flow-chart"
+import { getFlowGraph, getLayoutKey, refreshNodeData } from "./flow-chart"
 
 describe("getFlowGraph", () => {
   it("creates a single node for a root task with no children", () => {
@@ -122,5 +122,23 @@ describe("getLayoutKey", () => {
     expect(getLayoutKey([root, child, createTask({ id: "other", parent_id: "root" })], "root")).not.toBe(base)
     expect(getLayoutKey([root, { ...child, parent_id: "other" }], "root")).not.toBe(base)
     expect(getLayoutKey([root, child], "child")).not.toBe(base)
+  })
+})
+
+describe("refreshNodeData", () => {
+  it("keeps positions and finds tasks whose own id ends in -replaced", () => {
+    const real = createTask({ id: "import-replaced" })
+    const other = createTask({ id: "import" })
+    const { nodes } = getFlowGraph(
+      [createTask({ id: "root" }), { ...real, parent_id: "root" }, { ...other, parent_id: "root" }],
+      "root",
+    )
+    const updated = { ...real, parent_id: "root", state: TaskState.FAILURE }
+
+    const refreshed = refreshNodeData(nodes, [createTask({ id: "root" }), updated, { ...other, parent_id: "root" }])
+
+    const node = refreshed.find((candidate) => candidate.id === "import-replaced")
+    expect(node?.data).toBe(updated)
+    expect(node?.position).toEqual(nodes.find((candidate) => candidate.id === "import-replaced")?.position)
   })
 })

@@ -25,6 +25,13 @@ describe("parseTask progress", () => {
     expect(parseTask({ ...raw, progress: null }).progress).toBeUndefined()
   })
 
+  it("hides a report from an attempt before the current one", () => {
+    const report = { current: 3, total: 10, updated_at: "2025-06-15T12:00:05Z", attempt: 0 }
+
+    expect(parseTask({ ...raw, retries: 1, progress: report }).progress).toBeUndefined()
+    expect(parseTask({ ...raw, retries: 0, progress: report }).progress?.current).toBe(3)
+  })
+
   it("parses reported progress and drops empty optional fields", () => {
     const task = parseTask({
       ...raw,

@@ -1,5 +1,5 @@
 import { useSurrealDB } from "@components/surrealdb-provider"
-import { extractId, type SurrealTask, type SurrealWorkflow } from "@/types/surreal-records"
+import { extractId, type SurrealTask, type SurrealTaskProgress, type SurrealWorkflow } from "@/types/surreal-records"
 import type { LiveSubscription, Uuid } from "surrealdb"
 import { useCallback, useEffect, useRef, useState } from "react"
 
@@ -43,11 +43,24 @@ const microsOf = (value: unknown): number => {
   return Date.parse(`${match[1]}${match[3]}`) * 1000 + fraction
 }
 
+// The ingester's rules, applied to a report the page already knows against a fresh record.
+const isNewerProgress = (known: SurrealTaskProgress, task: SurrealTask): boolean => {
+  if (typeof known.attempt === "number") {
+    // Attempts order reports regardless of worker clocks.
+    if (known.attempt < (task.retries ?? 0)) return false
+    const fresh = task.progress
+    if (typeof fresh?.attempt === "number" && fresh.attempt !== known.attempt) return known.attempt > fresh.attempt
+    return !fresh || microsOf(known.updated_at) > microsOf(fresh.updated_at)
+  }
+  const reportedAt = microsOf(known.updated_at)
+  if (reportedAt < microsOf(task.last_started_at)) return false
+  // An empty fresh report after a later state change (task-retried clears progress) stays empty.
+  return task.progress ? reportedAt > microsOf(task.progress.updated_at) : reportedAt > microsOf(task.last_updated)
+}
+
 /**
  * Keep progress newer than a fresh snapshot's: a progress patch can land while
- * that snapshot's query is in flight, and nothing would bring it back. The same
- * rule as the ingester: newer than the stored report and not older than the
- * task's latest start (a retry clears the earlier attempt's progress).
+ * that snapshot's query is in flight, and nothing would bring it back.
  */
 export function keepNewerProgress(next: TaskWorkflowSnapshot, known: TaskWorkflowSnapshot): TaskWorkflowSnapshot {
   const knownProgress = new Map<string, SurrealTask["progress"]>()
@@ -56,10 +69,7 @@ export function keepNewerProgress(next: TaskWorkflowSnapshot, known: TaskWorkflo
   }
   const merge = (task: SurrealTask): SurrealTask => {
     const progress = knownProgress.get(extractId(task.id))
-    if (!progress) return task
-    const reportedAt = microsOf(progress.updated_at)
-    const isNewer = reportedAt > microsOf(task.progress?.updated_at) && reportedAt >= microsOf(task.last_started_at)
-    return isNewer ? { ...task, progress } : task
+    return progress && isNewerProgress(progress, task) ? { ...task, progress } : task
   }
   return { ...next, task: next.task && merge(next.task), members: next.members.map(merge) }
 }
