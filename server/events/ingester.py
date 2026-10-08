@@ -329,13 +329,17 @@ def build_task_upsert(event: dict, idx: int) -> tuple[str, dict]:
     if event_type == "task-failed" or event.get("exception") or event.get("traceback"):
         set_clauses.append("had_error = true")
 
-    if event_type == "task-started":
-        # A new attempt starts from zero: drop progress reported before it. started_at keeps the
-        # first attempt's start, so the latest one is kept separately to reject late reports.
+    if event_type in ("task-retried", "task-started"):
+        # A retry starts from zero, so both events drop progress reported before them. task-retried
+        # comes from the failed attempt's own worker, whose clock orders that attempt's reports even
+        # when the next attempt's worker clock runs behind.
         set_clauses.append(
             f"progress = IF ${p}_previous.progress.updated_at < <datetime>${p}_ts"
             f" THEN NONE ELSE ${p}_previous.progress END"
         )
+    if event_type == "task-started":
+        # started_at keeps the first attempt's start; the latest one, on the new attempt's own clock,
+        # rejects late reports from an earlier attempt without rejecting this attempt's.
         set_clauses.append(
             f"last_started_at = IF ${p}_previous.last_started_at IS NONE"
             f" OR <datetime>${p}_ts > ${p}_previous.last_started_at"

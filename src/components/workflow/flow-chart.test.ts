@@ -1,5 +1,6 @@
 import { createTask } from "@test-fixtures"
-import { getFlowGraph } from "./flow-chart"
+import { TaskState } from "@/types/surreal-records"
+import { getFlowGraph, getLayoutKey } from "./flow-chart"
 
 describe("getFlowGraph", () => {
   it("connects stored children when the child's parent metadata is missing", () => {
@@ -252,5 +253,25 @@ describe("getFlowGraph", () => {
 
     expect(nodes[0].position.x).toBe(5 * 180)
     expect(nodes[0].position.y).toBe(3 * 100)
+  })
+})
+
+describe("getLayoutKey", () => {
+  const root = createTask({ id: "root" })
+  const child = createTask({ id: "child", parent_id: "root", state: TaskState.STARTED })
+
+  it("ignores progress and state, which never move a node", () => {
+    const reported = { ...child, state: TaskState.SUCCESS, progress: { current: 4, total: 10, updated_at: new Date() } }
+
+    expect(getLayoutKey([root, reported], "root")).toBe(getLayoutKey([root, child], "root"))
+    expect(getLayoutKey([child, root], "root")).toBe(getLayoutKey([root, child], "root"))
+  })
+
+  it("changes when a task joins or moves in the tree", () => {
+    const base = getLayoutKey([root, child], "root")
+
+    expect(getLayoutKey([root, child, createTask({ id: "other", parent_id: "root" })], "root")).not.toBe(base)
+    expect(getLayoutKey([root, { ...child, parent_id: "other" }], "root")).not.toBe(base)
+    expect(getLayoutKey([root, child], "child")).not.toBe(base)
   })
 })

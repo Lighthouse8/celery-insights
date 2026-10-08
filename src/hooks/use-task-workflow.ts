@@ -23,7 +23,17 @@ const EMPTY_RESULT: TaskWorkflowSnapshot = {
   members: [],
 }
 
-const withoutProgress = ({ progress: _progress, ...rest }: SurrealTask) => JSON.stringify(rest)
+// Compares field by field, so key order and how the SDK serializes record ids
+// and datetimes in a SELECT result versus a live payload can't hide a match.
+const sameExceptProgress = (left: SurrealTask, right: SurrealTask): boolean => {
+  const fields = new Set([...Object.keys(left), ...Object.keys(right)])
+  fields.delete("progress")
+  const value = (task: SurrealTask, field: string) => {
+    const raw = (task as unknown as Record<string, unknown>)[field]
+    return raw instanceof Date ? raw.toISOString() : JSON.stringify(raw ?? null)
+  }
+  return [...fields].every((field) => value(left, field) === value(right, field))
+}
 
 // Microseconds since the epoch. The ingester stores microsecond timestamps, and Date
 // keeps only milliseconds, which would order two reports in the same millisecond wrongly.
@@ -71,7 +81,7 @@ export function applyProgressOnlyChange(
   const isRecord = (task: SurrealTask | null) => !!task && extractId(task.id) === recordId
   const memberIndex = snapshot.members.findIndex(isRecord)
   const known = [snapshot.task, snapshot.members[memberIndex]].filter((task) => isRecord(task ?? null))
-  if (!known.length || known.some((task) => withoutProgress(task as SurrealTask) !== withoutProgress(record))) {
+  if (!known.length || known.some((task) => !sameExceptProgress(task as SurrealTask, record))) {
     return undefined
   }
   return {

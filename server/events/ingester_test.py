@@ -235,6 +235,10 @@ class TestBuildTaskProgressUpdate:
         assert "progress = IF $t0_previous.progress.updated_at < <datetime>$t0_ts THEN NONE" in query
         assert "last_started_at = IF $t0_previous.last_started_at IS NONE" in query
 
+        query, _ = build_task_upsert({"type": "task-retried", "uuid": "abc", "timestamp": 1700000000.0}, 0)
+        assert "progress = IF $t0_previous.progress.updated_at < <datetime>$t0_ts THEN NONE" in query
+        assert "last_started_at" not in query
+
         query, _ = build_task_upsert({"type": "task-received", "uuid": "abc", "timestamp": 1700000000.0}, 0)
         assert "progress" not in query
 

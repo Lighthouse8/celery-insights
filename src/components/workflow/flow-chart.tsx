@@ -4,7 +4,7 @@ import { useIsDark } from "@hooks/use-is-dark"
 import type { Task } from "@/types/surreal-records"
 import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
 import { toSvg } from "html-to-image"
-import React, { useCallback, useEffect, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Background,
   ControlButton,
@@ -116,6 +116,13 @@ export const getFlowGraph = (
   }
 }
 
+/**
+ * Node positions and edges depend only on these, so a progress report or state
+ * change can update node data without re-laying out (and moving) the graph.
+ */
+export const getLayoutKey = (tasks: Task[], rootTaskId: string): string =>
+  [rootTaskId, ...tasks.map((task) => `${task.id}<${task.parent_id ?? ""}`).sort()].join("|")
+
 const FOCUS_ZOOM = 1
 const ZOOM_ANIMATION_SPEED = 1000
 
@@ -162,6 +169,8 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
 
   const fitView = useCallback(() => flow.fitView({ duration: ZOOM_ANIMATION_SPEED }), [flow])
 
+  const layoutKey = useMemo(() => getLayoutKey(tasks, rootTaskId), [tasks, rootTaskId])
+
   useEffect(() => {
     const graph = getFlowGraph(tasks, rootTaskId)
     setNodes(graph.nodes)
@@ -176,7 +185,20 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
     }
     setInitialized(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, rootTaskId, setNodes, setEdges, flow])
+  }, [layoutKey, setNodes, setEdges, flow])
+
+  // Any other change only refreshes node data, keeping each node where it is.
+  useEffect(() => {
+    const tasksById = new Map(tasks.map((task) => [task.id, task]))
+    setNodes((current) =>
+      current.map((node) => {
+        const task = tasksById.get(node.id.replace(/-replaced$/, ""))
+        return task && task !== (node.data as unknown)
+          ? { ...node, data: task as Task & Record<string, unknown> }
+          : node
+      }),
+    )
+  }, [tasks, setNodes])
 
   useEffect(() => {
     if (!currentTaskId) fitView()
