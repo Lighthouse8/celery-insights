@@ -294,6 +294,8 @@ async function insertWorkerHeartbeat(db: Surreal, hostname: string, ts: Date): P
   )
 }
 
+const DEMO_PROGRESS = { total: 200, description: "Processing records" }
+
 async function insertTaskEvent(
   db: Surreal,
   eventType: string,
@@ -348,6 +350,14 @@ async function insertTaskEvent(
     "task-rejected": "rejected_at",
     "task-revoked": "revoked_at",
     "task-retried": "retried_at",
+  }
+
+  if (eventType === "task-progress") {
+    await db.query(
+      `UPDATE type::record('task', $id) SET progress = { current: $current, total: $total, description: $description, updated_at: <datetime>$ts }`,
+      { id: task.taskId, ts: iso, current: extra?.current, total: extra?.total, description: extra?.description },
+    )
+    return
   }
 
   const state = stateMap[eventType]
@@ -506,6 +516,10 @@ async function simulateTaskLifecycle(
     // SUCCESS
     const runtime = randomBetween(0.1, 12.0)
     const succeededTime = new Date(startedTime.getTime() + runtime * 1000)
+    await insertTaskEvent(db, "task-progress", task, new Date(startedTime.getTime() + (runtime * 1000) / 2), {
+      ...DEMO_PROGRESS,
+      current: DEMO_PROGRESS.total / 2,
+    })
     await insertTaskEvent(db, "task-succeeded", task, succeededTime, {
       result: randomChoice(SAMPLE_RESULTS),
       runtime: Math.round(runtime * 1000) / 1000,
@@ -689,6 +703,10 @@ export class DemoEventGenerator {
       if (Math.random() > 0.3) {
         const startedTime = new Date(receivedTime.getTime() + randomBetween(100, 500))
         await insertTaskEvent(this.db, "task-started", task, startedTime)
+        await insertTaskEvent(this.db, "task-progress", task, new Date(startedTime.getTime() + 200), {
+          ...DEMO_PROGRESS,
+          current: Math.round(randomBetween(1, DEMO_PROGRESS.total - 1)),
+        })
       }
     }
   }

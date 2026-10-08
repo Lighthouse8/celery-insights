@@ -65,6 +65,20 @@ describe("DemoEventGenerator", () => {
     expect(eventCreates.length).toBeGreaterThan(50)
   })
 
+  it("reports progress for demo tasks", async () => {
+    await generator.start()
+
+    const progressUpdates = calls(mockDb).filter(
+      ([q]: MockCall) => typeof q === "string" && q.includes("SET progress = {"),
+    )
+    expect(progressUpdates.length).toBeGreaterThan(0)
+    for (const [, params] of progressUpdates) {
+      expect(params.total).toBe(200)
+      expect(params.current).toBeGreaterThan(0)
+      expect(params.current).toBeLessThan(200)
+    }
+  })
+
   it("generates tasks with valid states", async () => {
     await generator.start()
 
