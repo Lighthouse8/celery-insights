@@ -177,10 +177,13 @@ describe("keepNewerProgress across retries", () => {
     expect(keepNewerProgress(fresh({ retries: 1 }), known(failedAttempt)).members[0].progress).toBeUndefined()
   })
 
-  it("lets a tagged report replace an untagged one, whatever their clocks say", () => {
+  it("orders a tagged report and an untagged one by time, as the ingester does", () => {
     const tagged = { ...progress, current: 1, attempt: 0, updated_at: "2026-10-08T10:00:25Z" }
-    const untagged = fresh({ progress: { ...progress, current: 9, updated_at: "2026-10-08T10:00:30Z" } })
+    // After a reconnect the snapshot holds the newer untagged report the ingester kept.
+    const newerUntagged = fresh({ progress: { ...progress, current: 9, updated_at: "2026-10-08T10:00:30Z" } })
+    const olderUntagged = fresh({ progress: { ...progress, current: 9, updated_at: "2026-10-08T10:00:20Z" } })
 
-    expect(keepNewerProgress(untagged, known(tagged)).members[0].progress).toBe(tagged)
+    expect(keepNewerProgress(newerUntagged, known(tagged)).members[0].progress?.current).toBe(9)
+    expect(keepNewerProgress(olderUntagged, known(tagged)).members[0].progress).toBe(tagged)
   })
 })

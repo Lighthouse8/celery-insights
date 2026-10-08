@@ -87,7 +87,8 @@ def _build_task_meta_upsert(task_id: str, meta: dict) -> tuple[str, dict]:
         "args = $args",
         "kwargs = $kwargs",
         "worker = $worker",
-        "retries = $retries",
+        # Retries only go up; metadata from a failed attempt must not lower the count events raised.
+        "retries = math::max([$meta_previous.retries ?? 0, $retries])",
         "routing_key = $routing_key",
         "workflow_id = $meta_previous.workflow_id ?? $workflow_id",
         "last_updated = <datetime>$last_updated",
