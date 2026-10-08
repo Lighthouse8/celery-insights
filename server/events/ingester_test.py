@@ -165,6 +165,11 @@ class TestBuildTaskProgressUpdate:
             {"current": float("nan")},
             {"current": 1, "total": 0},
             {"current": 1, "total": "10"},
+            {"current": float("inf")},
+            {"current": 10**400},
+            {"current": 2**64},
+            {"current": 1, "total": 10**400},
+            {"current": 1, "total": 2**64},
         ],
     )
     def test_rejects_invalid_progress(self, fields):
@@ -174,6 +179,7 @@ class TestBuildTaskProgressUpdate:
     def test_task_started_resets_older_progress(self):
         query, _ = build_task_upsert({"type": "task-started", "uuid": "abc", "timestamp": 1700000000.0}, 0)
         assert "progress = IF $t0_previous.progress.updated_at < <datetime>$t0_ts THEN NONE" in query
+        assert "last_started_at = IF $t0_previous.last_started_at IS NONE" in query
 
         query, _ = build_task_upsert({"type": "task-received", "uuid": "abc", "timestamp": 1700000000.0}, 0)
         assert "progress" not in query
