@@ -112,6 +112,26 @@ describe("keepNewerProgress", () => {
     expect(keepNewerProgress(fresh, known).members[0].progress).toEqual(newer)
   })
 
+  it("orders reports and retry starts within the same millisecond", () => {
+    const sameMillisecond = {
+      task: null,
+      workflow: null,
+      members: [task("child", { progress: { ...progress, updated_at: "2026-10-08T10:00:05.000900Z" } })],
+    }
+    const olderInSameMillisecond = { ...progress, current: 2, updated_at: "2026-10-08T10:00:05.000100Z" }
+    const stale = { task: null, workflow: null, members: [task("child", { progress: olderInSameMillisecond })] }
+    const retriedLater = {
+      task: null,
+      workflow: null,
+      members: [task("child", { last_started_at: "2026-10-08T10:00:05.000950Z" })],
+    }
+
+    expect(keepNewerProgress(stale, sameMillisecond).members[0].progress?.updated_at).toBe(
+      "2026-10-08T10:00:05.000900Z",
+    )
+    expect(keepNewerProgress(retriedLater, sameMillisecond).members[0].progress).toBeUndefined()
+  })
+
   it("never brings back progress from before a retry started", () => {
     const retried = {
       task: null,

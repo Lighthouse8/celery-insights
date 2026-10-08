@@ -25,7 +25,16 @@ const EMPTY_RESULT: TaskWorkflowSnapshot = {
 
 const withoutProgress = ({ progress: _progress, ...rest }: SurrealTask) => JSON.stringify(rest)
 
-const timeOf = (value: unknown) => (value ? new Date(String(value)).getTime() : Number.NEGATIVE_INFINITY)
+// Microseconds since the epoch. The ingester stores microsecond timestamps, and Date
+// keeps only milliseconds, which would order two reports in the same millisecond wrongly.
+const microsOf = (value: unknown): number => {
+  if (!value) return Number.NEGATIVE_INFINITY
+  const iso = value instanceof Date ? value.toISOString() : String(value)
+  const match = /^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(.*)$/.exec(iso)
+  if (!match) return new Date(iso).getTime() * 1000
+  const fraction = Number((match[2] ?? "").padEnd(6, "0").slice(0, 6))
+  return Date.parse(`${match[1]}${match[3]}`) * 1000 + fraction
+}
 
 /**
  * Keep progress newer than a fresh snapshot's: a progress patch can land while
@@ -41,8 +50,8 @@ export function keepNewerProgress(next: TaskWorkflowSnapshot, known: TaskWorkflo
   const merge = (task: SurrealTask): SurrealTask => {
     const progress = knownProgress.get(extractId(task.id))
     if (!progress) return task
-    const reportedAt = timeOf(progress.updated_at)
-    const isNewer = reportedAt > timeOf(task.progress?.updated_at) && reportedAt >= timeOf(task.last_started_at)
+    const reportedAt = microsOf(progress.updated_at)
+    const isNewer = reportedAt > microsOf(task.progress?.updated_at) && reportedAt >= microsOf(task.last_started_at)
     return isNewer ? { ...task, progress } : task
   }
   return { ...next, task: next.task && merge(next.task), members: next.members.map(merge) }
