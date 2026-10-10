@@ -247,16 +247,23 @@ export class ObservationApi {
                 "rejected_at",
                 "last_updated",
                 "first_observed_at",
+                "last_started_at",
+                "progress.updated_at",
               ]
             : table === "event"
               ? ["timestamp"]
               : ["last_updated"]
-        for (const field of dateFields) {
-          if (typeof content[field] === "string") {
-            const date = new Date(content[field])
+        for (const path of dateFields) {
+          const [field, nested] = path.split(".", 2)
+          const parent = nested === undefined ? content : content[field]
+          if (!parent || typeof parent !== "object") continue
+          const holder = parent as Record<string, unknown>
+          const key = nested ?? field
+          if (typeof holder[key] === "string") {
+            const date = new Date(holder[key])
             if (!Number.isFinite(date.valueOf()))
               return Response.json({ success: false, error: "Invalid backup timestamp" })
-            content[field] = date
+            holder[key] = date
           }
         }
         bindings[`${table}_${index}_id`] = idString(id)
