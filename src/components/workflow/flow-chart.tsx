@@ -4,7 +4,7 @@ import { useIsDark } from "@hooks/use-is-dark"
 import type { Task } from "@/types/surreal-records"
 import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
 import { toSvg } from "html-to-image"
-import React, { useCallback, useEffect, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Background,
   ControlButton,
@@ -21,10 +21,13 @@ import {
   type XYPosition,
 } from "@xyflow/react"
 
+const COLUMN_WIDTH = 180
+const ROW_HEIGHT = 100
+
 const createNode = (task: Task, x: number, y: number, nodeId?: string): Node => ({
   id: nodeId || task.id,
   type: "taskNode",
-  position: { x: x * 180, y: y * 100 },
+  position: { x: x * COLUMN_WIDTH, y: y * ROW_HEIGHT },
   data: task as Task & Record<string, unknown>,
   connectable: false,
   deletable: false,
@@ -67,10 +70,12 @@ export const getFlowGraph = (
   const visited = new Set<string>()
   // Stored children lists can be stale; only a reachable parent may adopt a parentless child, once.
   const claimed = new Set<string>([rootTaskId])
+  let nextLeafRow = 0
 
-  function dfs(task: Task, x: number, y: number) {
+  const visitTask = (task: Task, column: number): number => {
     visited.add(task.id)
-    nodes.push(createNode(task, x, y))
+    const node = createNode(task, column, 0)
+    nodes.push(node)
 
     const children = [...(childMap.get(task.id) || [])]
     for (const childId of task.children) {
@@ -80,31 +85,55 @@ export const getFlowGraph = (
       children.push(child)
     }
 
-    const startY = y - (children.length - 1) / 2
-    const childX = x + 1
-
-    children
+    const childRows = children
       .sort((a, b) => a.id.localeCompare(b.id))
-      .forEach((child, index) => {
-        const childY = startY + index
+      .map((child) => {
         if (visited.has(child.id)) {
           const replacedId = child.id + "-replaced"
-          nodes.push(createNode(child, childX, childY, replacedId))
+          const row = nextLeafRow++
+          nodes.push(createNode(child, column + 1, row, replacedId))
           edges.push(createEdge(task.id, replacedId))
-        } else {
-          edges.push(createEdge(task.id, child.id))
-          dfs(child, childX, childY)
+          return row
         }
+        edges.push(createEdge(task.id, child.id))
+        return visitTask(child, column + 1)
       })
+    const row = childRows.length ? (childRows[0] + childRows[childRows.length - 1]) / 2 : nextLeafRow++
+    node.position.y = row * ROW_HEIGHT
+    return row
   }
 
   const rootTask = taskMap.get(rootTaskId)
-  if (rootTask) dfs(rootTask, initialPosition?.x ?? 0, initialPosition?.y ?? 0)
+  if (rootTask) {
+    const rootRow = visitTask(rootTask, initialPosition?.x ?? 0)
+    const offset = ((initialPosition?.y ?? 0) - rootRow) * ROW_HEIGHT
+    for (const node of nodes) node.position.y += offset
+  }
 
   return {
     nodes: nodes,
     edges: edges,
   }
+}
+
+/**
+ * Node positions and edges depend only on each task's parent and its stored children (which can adopt a
+ * parentless child), so a progress report or state change can update node data without re-laying out the graph.
+ */
+export const getLayoutKey = (tasks: Task[], rootTaskId: string): string =>
+  [
+    rootTaskId,
+    ...tasks.map((task) => `${task.id}<${task.parent_id ?? ""}>${[...task.children].sort().join(",")}`).sort(),
+  ].join("|")
+
+/** Swap in each node's latest task without moving it. */
+export const refreshNodeData = (nodes: Node[], tasks: Task[]): Node[] => {
+  const tasksById = new Map(tasks.map((task) => [task.id, task]))
+  return nodes.map((node) => {
+    // Duplicated nodes get a "-replaced" id but keep their task in data.
+    const task = tasksById.get((node.data as unknown as Task).id)
+    return task && task !== (node.data as unknown) ? { ...node, data: task as Task & Record<string, unknown> } : node
+  })
 }
 
 const FOCUS_ZOOM = 1
@@ -153,6 +182,8 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
 
   const fitView = useCallback(() => flow.fitView({ duration: ZOOM_ANIMATION_SPEED }), [flow])
 
+  const layoutKey = useMemo(() => getLayoutKey(tasks, rootTaskId), [tasks, rootTaskId])
+
   useEffect(() => {
     const graph = getFlowGraph(tasks, rootTaskId)
     setNodes(graph.nodes)
@@ -167,7 +198,10 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
     }
     setInitialized(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, rootTaskId, setNodes, setEdges, flow])
+  }, [layoutKey, setNodes, setEdges, flow])
+
+  // Any other change only refreshes node data, keeping each node where it is.
+  useEffect(() => setNodes((current) => refreshNodeData(current, tasks)), [tasks, setNodes])
 
   useEffect(() => {
     if (!currentTaskId) fitView()

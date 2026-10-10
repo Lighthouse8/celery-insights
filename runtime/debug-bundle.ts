@@ -341,6 +341,10 @@ const DATETIME_FIELDS: Record<"task" | "event" | "worker", readonly string[]> = 
     "rejected_at",
     "last_updated",
     "first_observed_at",
+    "last_started_at",
+    "progress.updated_at",
+    "execution_observed_at",
+    "execution_active_at",
   ],
   event: ["timestamp"],
   worker: ["last_updated"],
@@ -351,14 +355,25 @@ function reviveDateFields(
   record: Record<string, unknown>,
 ): Record<string, unknown> {
   const revived = { ...record }
-  for (const field of DATETIME_FIELDS[table]) {
-    const value = revived[field]
-    if (typeof value !== "string") continue
-    const parsed = new Date(value)
-    if (Number.isNaN(parsed.valueOf())) continue
-    revived[field] = parsed
+  for (const path of DATETIME_FIELDS[table]) {
+    const [field, nested] = path.split(".", 2)
+    if (nested === undefined) {
+      const parsed = parseDateString(revived[field])
+      if (parsed) revived[field] = parsed
+      continue
+    }
+    const parent = revived[field]
+    if (!parent || typeof parent !== "object") continue
+    const parsed = parseDateString((parent as Record<string, unknown>)[nested])
+    if (parsed) revived[field] = { ...parent, [nested]: parsed }
   }
   return revived
+}
+
+function parseDateString(value: unknown): Date | undefined {
+  if (typeof value !== "string") return undefined
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.valueOf()) ? undefined : parsed
 }
 
 function chunkRecords(records: ImportRecord[], chunkSize: number): ImportRecord[][] {

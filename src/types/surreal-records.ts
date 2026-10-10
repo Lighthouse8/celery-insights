@@ -13,6 +13,16 @@ export enum TaskState {
   IGNORED = "IGNORED",
 }
 
+/** Latest progress a task reported with a `task-progress` event */
+export interface SurrealTaskProgress {
+  current: number
+  total?: number | null
+  description?: string | null
+  updated_at: string
+  /** The task's retry count when it reported, if the task sent it. */
+  attempt?: number | null
+}
+
 /** Task record as stored in SurrealDB */
 export interface SurrealTask {
   id: unknown // SurrealDB RecordId — use String(id) for comparison
@@ -21,6 +31,9 @@ export interface SurrealTask {
   sent_at?: string | null
   received_at?: string | null
   started_at?: string | null
+  execution_active?: boolean | null
+  execution_observed_at?: string | null
+  execution_active_at?: string | null
   succeeded_at?: string | null
   failed_at?: string | null
   retried_at?: string | null
@@ -44,6 +57,8 @@ export interface SurrealTask {
   result_truncated?: boolean
   exception?: string | null
   traceback?: string | null
+  progress?: SurrealTaskProgress | null
+  last_started_at?: string | null
 }
 
 export interface SurrealWorkflow {
@@ -170,6 +185,7 @@ export interface ScheduledTask {
 
 /** Parsed worker inspect data from the worker poller */
 export interface WorkerInspectData {
+  _observed_at?: Partial<Record<"stats" | "active" | "registered" | "scheduled" | "reserved" | "active_queues", string>>
   stats?: Record<string, unknown>
   active?: TaskRequest[]
   registered?: string[]
@@ -192,6 +208,13 @@ export const parseWorkerInspect = (worker: SurrealWorker | null): WorkerInspectD
 
 const isoToDate = (iso: string | null | undefined): Date | undefined => (iso ? new Date(iso) : undefined)
 
+export interface TaskProgress {
+  current: number
+  total?: number
+  description?: string
+  updated_at: Date
+}
+
 /** Parsed task — same shape as SurrealTask but with extracted id and Date timestamps */
 export interface Task {
   id: string
@@ -200,6 +223,9 @@ export interface Task {
   sent_at: Date
   received_at?: Date
   started_at?: Date
+  execution_active?: boolean
+  execution_observed_at?: Date
+  execution_active_at?: Date
   succeeded_at?: Date
   failed_at?: Date
   retried_at?: Date
@@ -223,6 +249,7 @@ export interface Task {
   result_truncated?: boolean
   exception?: string
   traceback?: string
+  progress?: TaskProgress
 }
 
 export interface Workflow {
@@ -249,6 +276,9 @@ export const parseTask = (raw: SurrealTask): Task => ({
   sent_at: isoToDate(raw.sent_at) || isoToDate(raw.last_updated) || new Date(0),
   received_at: isoToDate(raw.received_at),
   started_at: isoToDate(raw.started_at),
+  execution_active: raw.execution_active ?? undefined,
+  execution_observed_at: isoToDate(raw.execution_observed_at),
+  execution_active_at: isoToDate(raw.execution_active_at),
   succeeded_at: isoToDate(raw.succeeded_at),
   failed_at: isoToDate(raw.failed_at),
   retried_at: isoToDate(raw.retried_at),
@@ -272,6 +302,16 @@ export const parseTask = (raw: SurrealTask): Task => ({
   result_truncated: raw.result_truncated,
   exception: raw.exception || undefined,
   traceback: raw.traceback || undefined,
+  // A report from an attempt before the current one belongs to a failed attempt.
+  progress:
+    raw.progress && !(typeof raw.progress.attempt === "number" && raw.progress.attempt < (raw.retries ?? 0))
+      ? {
+          current: raw.progress.current,
+          total: raw.progress.total ?? undefined,
+          description: raw.progress.description || undefined,
+          updated_at: isoToDate(raw.progress.updated_at) || new Date(),
+        }
+      : undefined,
 })
 
 export const parseWorkflow = (raw: SurrealWorkflow): Workflow => ({

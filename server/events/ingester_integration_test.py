@@ -4,14 +4,23 @@ import asyncio
 import shutil
 import socket
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import httpx
 import pytest
+from pytest_mock import MockerFixture
 from surrealdb import AsyncSurreal
+from surrealdb.connections.async_ws import AsyncWsSurrealConnection
 
-from events.ingester import build_task_upsert, build_workflow_membership_upsert, build_workflow_summary_recompute
+from events.ingester import (
+    SurrealDBIngester,
+    build_task_upsert,
+    build_worker_upsert,
+    build_workflow_membership_upsert,
+    build_workflow_summary_recompute,
+)
 from tasks.task_search import keyword_search_term
 from tasks.result_fetcher import _build_task_meta_upsert
 
@@ -166,3 +175,212 @@ async def test_batched_recovery_preserves_workflow_invocation_and_errors(
     finally:
         process.terminate()
         await asyncio.to_thread(process.wait, timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_worker_offline_event_clears_earlier_execution_observations(
+    surreal_db: AsyncWsSurrealConnection,
+) -> None:
+    await surreal_db.query(
+        "CREATE worker:`worker@host` SET status = 'online', last_updated = <datetime>'2026-10-06T12:00:00Z'; "
+        "CREATE task:observed, task:later, task:other SET state = 'STARTED', worker = 'worker@host', "
+        "workflow_id = 'root', execution_active = true, "
+        "execution_observed_at = <datetime>'2026-10-06T12:00:00Z', last_updated = <datetime>'2026-10-06T11:59:00Z'; "
+        "UPDATE task:later SET execution_observed_at = <datetime>'2026-10-06T12:02:00Z'; "
+        "UPDATE task:other SET worker = 'other@host'"
+    )
+    offline_at = datetime(2026, 10, 6, 12, 1, tzinfo=UTC).timestamp()
+    query, parameters = build_worker_upsert(
+        {"type": "worker-offline", "hostname": "worker@host", "timestamp": offline_at}, 0
+    )
+    await surreal_db.query(query, parameters)
+    worker = cast(list[dict[str, Any]], await surreal_db.query("SELECT * FROM worker:`worker@host`"))[0]
+    tasks = {str(task["id"]): task for task in cast(list[dict[str, Any]], await surreal_db.query("SELECT * FROM task"))}
+    assert worker["status"] == "offline"
+    assert tasks["task:observed"].get("execution_active") is None
+    assert tasks["task:observed"]["execution_observed_at"] == datetime(2026, 10, 6, 12, tzinfo=UTC)
+    assert tasks["task:observed"]["state"] == "STARTED"
+    assert tasks["task:later"]["execution_active"] is True
+    assert tasks["task:other"]["execution_active"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("terminal_event", "expected_fields"),
+    [
+        (
+            {"type": "task-succeeded", "result": "42", "runtime": 1.5},
+            {"state": "SUCCESS", "result": "42", "runtime": 1.5},
+        ),
+        (
+            {"type": "task-failed", "exception": "ValueError('boom')", "traceback": "Traceback ..."},
+            {"state": "FAILURE", "exception": "ValueError('boom')", "traceback": "Traceback ..."},
+        ),
+    ],
+)
+async def test_older_terminal_event_replaces_an_undated_observation(
+    surreal_db: AsyncWsSurrealConnection, terminal_event: dict[str, Any], expected_fields: dict[str, Any]
+) -> None:
+    query, parameters = _build_task_meta_upsert(
+        "undated", {"status": "STARTED", "result": {"pid": 7, "hostname": "stale@host"}}
+    )
+    await surreal_db.query(query, parameters)
+    observed_at = cast(list[dict[str, Any]], await surreal_db.query("SELECT * FROM task:undated"))[0]["last_updated"]
+    event_at = observed_at - timedelta(seconds=2)
+
+    query, parameters = build_task_upsert(
+        {"type": "task-received", "uuid": "undated", "timestamp": event_at.timestamp()}, 0
+    )
+    await surreal_db.query(query, parameters)
+    task = cast(list[dict[str, Any]], await surreal_db.query("SELECT * FROM task:undated"))[0]
+    assert task["state"] == "STARTED"
+    assert task["last_updated"] == observed_at
+    assert task["last_updated_observed"] is True
+
+    query, parameters = build_task_upsert(
+        {**terminal_event, "uuid": "undated", "timestamp": event_at.timestamp(), "hostname": "worker@host"}, 0
+    )
+    await surreal_db.query(query, parameters)
+    task = cast(list[dict[str, Any]], await surreal_db.query("SELECT * FROM task:undated"))[0]
+    assert {field: task.get(field) for field in expected_fields} == expected_fields
+    assert task["worker"] == "worker@host"
+    assert task["last_updated"] == event_at
+    assert task["last_updated_observed"] is False
+
+
+@pytest.mark.asyncio
+async def test_same_state_event_fills_missing_outcome_fields(surreal_db: AsyncWsSurrealConnection) -> None:
+    query, parameters = _build_task_meta_upsert("done", {"status": "SUCCESS", "date_done": "2026-10-06T12:00:00Z"})
+    await surreal_db.query(query, parameters)
+    query, parameters = build_task_upsert(
+        {
+            "type": "task-succeeded",
+            "uuid": "done",
+            "timestamp": datetime(2026, 10, 6, 11, 59, 59, tzinfo=UTC).timestamp(),
+            "result": "42",
+            "runtime": 1.5,
+        },
+        0,
+    )
+    await surreal_db.query(query, parameters)
+    task = cast(list[dict[str, Any]], await surreal_db.query("SELECT * FROM task:done"))[0]
+    assert task["state"] == "SUCCESS"
+    assert task["result"] == "42"
+    assert task["runtime"] == 1.5
+    assert task["last_updated"] == datetime(2026, 10, 6, 12, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_same_terminal_event_replaces_an_undated_terminal_observation(
+    surreal_db: AsyncWsSurrealConnection,
+) -> None:
+    query, parameters = _build_task_meta_upsert("undated", {"status": "SUCCESS", "result": 42})
+    await surreal_db.query(query, parameters)
+    observed_at = cast(list[dict[str, Any]], await surreal_db.query("SELECT * FROM task:undated"))[0]["last_updated"]
+    event_at = observed_at - timedelta(seconds=2)
+
+    query, parameters = build_task_upsert(
+        {"type": "task-succeeded", "uuid": "undated", "timestamp": event_at.timestamp(), "runtime": 1.5}, 0
+    )
+    await surreal_db.query(query, parameters)
+    task = cast(list[dict[str, Any]], await surreal_db.query("SELECT * FROM task:undated"))[0]
+    assert task["state"] == "SUCCESS"
+    assert task["succeeded_at"] == event_at
+    assert task["runtime"] == 1.5
+    assert task["last_updated"] == event_at
+    assert task["last_updated_observed"] is False
+
+
+@pytest.mark.asyncio
+async def test_progress_follows_latest_report_and_resets_on_new_attempt(
+    surreal_db: AsyncWsSurrealConnection, mocker: MockerFixture
+) -> None:
+    mocker.patch("events.ingester.get_db", return_value=surreal_db)
+    ingester = SurrealDBIngester(asyncio.Queue())
+
+    async def rows(sql: str) -> list[dict]:
+        return cast(list[dict], await surreal_db.query(sql))
+
+    async def ingest(*events: dict) -> dict:
+        ingester._buffer = list(events)
+        await ingester._flush()
+        assert ingester._buffer == [], "flush failed and re-queued the batch"
+        return (await rows("SELECT * FROM task:job"))[0]
+
+    def progress(timestamp: float, **fields: object) -> dict:
+        return {"type": "task-progress", "uuid": "job", "timestamp": timestamp, **fields}
+
+    job = await ingest(
+        {"type": "task-sent", "uuid": "job", "timestamp": 1700000000.0, "name": "reports.cache"},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000001.0},
+        progress(1700000003.0, current=4, total=10, description="Caching days"),
+        progress(1700000002.0, current=2, total=10),
+        progress(1700000004.0, current="x"),
+        {"type": "task-progress", "uuid": "unknown", "timestamp": 1700000004.0, "current": 1},
+    )
+    assert job["state"] == "STARTED"
+    assert job["progress"] == {
+        "current": 4,
+        "total": 10,
+        "description": "Caching days",
+        "updated_at": datetime.fromtimestamp(1700000003, tz=UTC),
+    }
+    assert await rows("SELECT * FROM task:unknown") == []
+    assert len(await rows("SELECT * FROM event WHERE event_type = 'task-progress'")) == 4
+
+    job = await ingest(
+        {"type": "task-retried", "uuid": "job", "timestamp": 1700000005.0},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000006.0},
+    )
+    assert job.get("progress") is None
+
+    # A report from the first attempt that arrives after the retry started stays cleared.
+    job = await ingest(progress(1700000005.5, current=9, total=10))
+    assert job.get("progress") is None
+
+    job = await ingest(progress(1700000007.0, current=1))
+    assert job["progress"] == {"current": 1, "updated_at": datetime.fromtimestamp(1700000007, tz=UTC)}
+
+    # The next attempt runs on a worker whose clock is behind the first one's. task-retried
+    # still clears the first attempt's report, and the new attempt's own reports count.
+    job = await ingest(
+        progress(1700000020.0, current=7, total=10),
+        {"type": "task-retried", "uuid": "job", "timestamp": 1700000021.0},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000018.0},
+    )
+    assert job.get("progress") is None
+    job = await ingest(progress(1700000019.0, current=1, total=10))
+    assert job["progress"]["current"] == 1
+
+    # With the attempt in each report, clocks no longer decide across workers: the next
+    # attempt's worker runs behind, and a delayed report from the failed attempt, stamped
+    # later than the new attempt's reports, is still ignored.
+    job = await ingest(
+        {"type": "task-received", "uuid": "job", "timestamp": 1700000030.0, "retries": 2},
+        progress(1700000025.0, current=1, total=10, attempt=2),
+        progress(1700000032.0, current=9, total=10, attempt=1),
+    )
+    assert job["progress"]["current"] == 1
+    assert job["progress"]["attempt"] == 2
+    job = await ingest(progress(1700000026.0, current=2, total=10, attempt=2))
+    assert job["progress"]["current"] == 2
+    # Once the task reports its attempt, an untagged report never replaces it, newer or not.
+    job = await ingest(progress(1700000099.0, current=7, total=10))
+    assert job["progress"]["current"] == 2
+
+    # The next retry's task-received comes from a worker whose clock is behind: it still
+    # raises retries, so a late report from attempt 2 is ignored even with no attempt 3 report.
+    job = await ingest(
+        {"type": "task-retried", "uuid": "job", "timestamp": 1700000040.0},
+        {"type": "task-received", "uuid": "job", "timestamp": 1700000035.0, "retries": 3},
+    )
+    assert job["retries"] == 3
+    # The result-backend poller then reads the failed attempt's metadata: it can't lower retries.
+    query, bindings = _build_task_meta_upsert(
+        "job", {"status": "RETRY", "retries": 0, "date_done": "2023-11-14T22:14:00Z"}
+    )
+    await surreal_db.query(query, bindings)
+    assert (await rows("SELECT * FROM task:job"))[0]["retries"] == 3
+    job = await ingest(progress(1700000041.0, current=8, total=10, attempt=2))
+    assert job["progress"]["attempt"] == 2
+    assert job["progress"]["current"] == 2

@@ -11,6 +11,7 @@
  * - Realistic timing and intervals
  */
 import type { Surreal } from "surrealdb"
+import type { TaskRequest, WorkerInspectData } from "@/types/surreal-records"
 
 // --- Configuration ---
 
@@ -231,6 +232,20 @@ async function updateWorkflowProjection(db: Surreal, task: TaskLifecycleEvent, t
   )
 }
 
+const buildWorkerInspect = (active: TaskRequest[], observedAt: string): WorkerInspectData => ({
+  stats: {
+    pool: { "max-concurrency": 4, processes: [1001, 1002, 1003, 1004] },
+    broker: { transport: "amqp", hostname: "rabbitmq", port: 5672 },
+    prefetch_count: 16,
+    rusage: { stime: 1.2, utime: 3.4, maxrss: 65536 },
+    total: {},
+  },
+  registered: TASK_TYPES.slice(0, 6),
+  active_queues: [{ name: "celery", exchange: { name: "celery", type: "direct" }, routing_key: "celery" }],
+  active,
+  _observed_at: { active: observedAt },
+})
+
 async function insertWorkerOnline(db: Surreal, hostname: string, ts: Date): Promise<void> {
   const iso = ts.toISOString()
   await db.query(
@@ -240,34 +255,46 @@ async function insertWorkerOnline(db: Surreal, hostname: string, ts: Date): Prom
             missed_polls = 0,
             hostname = $hostname,
             inspect = $inspect`,
-    {
-      id: hostname,
-      ts: iso,
-      hostname,
-      inspect: JSON.stringify({
-        stats: {
-          pool: { "max-concurrency": 4, processes: [1001, 1002, 1003, 1004] },
-          broker: { transport: "amqp", hostname: "rabbitmq", port: 5672 },
-          prefetch_count: 16,
-          rusage: { stime: 1.2, utime: 3.4, maxrss: 65536 },
-          total: {},
-        },
-        registered: TASK_TYPES.slice(0, 6),
-        active_queues: [{ name: "celery", exchange: { name: "celery", type: "direct" }, routing_key: "celery" }],
-      }),
-    },
+    { id: hostname, ts: iso, hostname, inspect: JSON.stringify(buildWorkerInspect([], iso)) },
   )
 }
 
+interface StartedTaskRow {
+  id: string
+  type?: string | null
+  started_at?: string | null
+}
+
+/** Mirrors the worker poller: a heartbeat is a successful active-list inspection of every STARTED task. */
 async function insertWorkerHeartbeat(db: Surreal, hostname: string, ts: Date): Promise<void> {
   const iso = ts.toISOString()
+  const rows = await db.query<Array<Array<StartedTaskRow>>>(
+    "SELECT record::id(id) AS id, type, started_at FROM task WHERE worker = $hostname AND state = 'STARTED'",
+    { hostname },
+  )
+  const active: TaskRequest[] = (rows[0] ?? []).map((row) => ({
+    id: row.id,
+    name: row.type ?? "",
+    type: row.type ?? "",
+    args: [],
+    kwargs: {},
+    hostname,
+    time_start: row.started_at ? Date.parse(row.started_at) / 1000 : null,
+  }))
   await db.query(
     `UPDATE type::record('worker', $id) SET
             last_updated = <datetime>$ts,
-            missed_polls = 0`,
-    { id: hostname, ts: iso },
+            missed_polls = 0,
+            inspect = $inspect`,
+    { id: hostname, ts: iso, inspect: JSON.stringify(buildWorkerInspect(active, iso)) },
+  )
+  await db.query(
+    "UPDATE task SET execution_active = true, execution_observed_at = <datetime>$ts, execution_active_at = <datetime>$ts WHERE worker = $hostname AND state = 'STARTED'",
+    { hostname, ts: iso },
   )
 }
+
+const DEMO_PROGRESS = { total: 200, description: "Processing records" }
 
 async function insertTaskEvent(
   db: Surreal,
@@ -323,6 +350,14 @@ async function insertTaskEvent(
     "task-rejected": "rejected_at",
     "task-revoked": "revoked_at",
     "task-retried": "retried_at",
+  }
+
+  if (eventType === "task-progress") {
+    await db.query(
+      `UPDATE type::record('task', $id) SET progress = { current: $current, total: $total, description: $description, updated_at: <datetime>$ts }`,
+      { id: task.taskId, ts: iso, current: extra?.current, total: extra?.total, description: extra?.description },
+    )
+    return
   }
 
   const state = stateMap[eventType]
@@ -393,6 +428,16 @@ async function insertTaskEvent(
   if (extra?.retries !== undefined) {
     setClauses.push(`retries = IF last_updated IS NONE OR <datetime>$ts >= last_updated THEN $retries ELSE retries END`)
     params.retries = extra.retries
+  }
+
+  if (eventType === "task-started") {
+    setClauses.push(
+      "execution_active = true",
+      "execution_observed_at = <datetime>$ts",
+      "execution_active_at = <datetime>$ts",
+    )
+  } else if (state !== "PENDING" && state !== "RECEIVED") {
+    setClauses.push("execution_active = NONE", "execution_observed_at = NONE")
   }
 
   const query = `UPSERT type::record('task', $id) SET ${setClauses.join(", ")}`
@@ -471,6 +516,10 @@ async function simulateTaskLifecycle(
     // SUCCESS
     const runtime = randomBetween(0.1, 12.0)
     const succeededTime = new Date(startedTime.getTime() + runtime * 1000)
+    await insertTaskEvent(db, "task-progress", task, new Date(startedTime.getTime() + (runtime * 1000) / 2), {
+      ...DEMO_PROGRESS,
+      current: DEMO_PROGRESS.total / 2,
+    })
     await insertTaskEvent(db, "task-succeeded", task, succeededTime, {
       result: randomChoice(SAMPLE_RESULTS),
       runtime: Math.round(runtime * 1000) / 1000,
@@ -565,6 +614,7 @@ export class DemoEventGenerator {
     try {
       await this.seedWorkers()
       await this.seedHistoricalTasks()
+      await this.sendWorkerHeartbeats()
       this.startContinuousGeneration()
       this.startWorkerHeartbeats()
     } catch (err) {
@@ -653,6 +703,10 @@ export class DemoEventGenerator {
       if (Math.random() > 0.3) {
         const startedTime = new Date(receivedTime.getTime() + randomBetween(100, 500))
         await insertTaskEvent(this.db, "task-started", task, startedTime)
+        await insertTaskEvent(this.db, "task-progress", task, new Date(startedTime.getTime() + 200), {
+          ...DEMO_PROGRESS,
+          current: Math.round(randomBetween(1, DEMO_PROGRESS.total - 1)),
+        })
       }
     }
   }
@@ -714,19 +768,21 @@ export class DemoEventGenerator {
     await simulateTaskLifecycle(this.db, task, now, { fail, retry })
   }
 
+  private async sendWorkerHeartbeats(): Promise<void> {
+    const now = new Date()
+    for (const worker of DEMO_WORKERS) {
+      if (this.stopped) return
+      try {
+        await insertWorkerHeartbeat(this.db, worker, now)
+      } catch {
+        // Ignore heartbeat errors
+      }
+    }
+  }
+
   private startWorkerHeartbeats(): void {
     // Send worker heartbeats every 5 seconds
-    const interval = setInterval(async () => {
-      if (this.stopped) return
-      const now = new Date()
-      for (const worker of DEMO_WORKERS) {
-        try {
-          await insertWorkerHeartbeat(this.db, worker, now)
-        } catch {
-          // Ignore heartbeat errors
-        }
-      }
-    }, 5000)
+    const interval = setInterval(() => this.sendWorkerHeartbeats(), 5000)
     this.intervals.push(interval)
   }
 }

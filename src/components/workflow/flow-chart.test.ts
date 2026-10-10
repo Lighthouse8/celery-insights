@@ -1,7 +1,75 @@
 import { createTask } from "@test-fixtures"
-import { getFlowGraph } from "./flow-chart"
+import { TaskState } from "@/types/surreal-records"
+import { getFlowGraph, getLayoutKey, refreshNodeData } from "./flow-chart"
 
 describe("getFlowGraph", () => {
+  it("keeps nested channel and resource branches in separate rows", () => {
+    const tasks = [
+      createTask({ id: "root" }),
+      createTask({ id: "channel-meta", parent_id: "root" }),
+      createTask({ id: "channel-linkedin", parent_id: "root" }),
+      createTask({ id: "meta-resource-1", parent_id: "channel-meta" }),
+      createTask({ id: "meta-resource-2", parent_id: "channel-meta" }),
+      createTask({ id: "linkedin-resource-1", parent_id: "channel-linkedin" }),
+      createTask({ id: "linkedin-resource-2", parent_id: "channel-linkedin" }),
+      createTask({ id: "linkedin-resource-3", parent_id: "channel-linkedin" }),
+      createTask({ id: "linkedin-resource-4", parent_id: "channel-linkedin" }),
+      createTask({ id: "meta-hierarchy-1", parent_id: "meta-resource-1" }),
+      createTask({ id: "meta-hierarchy-2", parent_id: "meta-resource-2" }),
+      createTask({ id: "linkedin-hierarchy-1", parent_id: "linkedin-resource-1" }),
+      createTask({ id: "linkedin-hierarchy-2", parent_id: "linkedin-resource-2" }),
+      createTask({ id: "linkedin-hierarchy-3", parent_id: "linkedin-resource-3" }),
+      createTask({ id: "linkedin-hierarchy-4", parent_id: "linkedin-resource-4" }),
+      createTask({ id: "meta-finalize", parent_id: "meta-hierarchy-1" }),
+      createTask({ id: "linkedin-metrics-1", parent_id: "linkedin-hierarchy-1" }),
+      createTask({ id: "linkedin-conversions-1", parent_id: "linkedin-hierarchy-1" }),
+      createTask({ id: "linkedin-metrics-2", parent_id: "linkedin-hierarchy-2" }),
+      createTask({ id: "linkedin-conversions-2", parent_id: "linkedin-hierarchy-2" }),
+    ]
+
+    const { nodes, edges } = getFlowGraph(tasks, "root")
+    const columns = new Map<number, number[]>()
+    for (const node of nodes) {
+      const rows = columns.get(node.position.x) ?? []
+      rows.push(node.position.y)
+      columns.set(node.position.x, rows)
+    }
+
+    expect(nodes).toHaveLength(tasks.length)
+    for (const rows of columns.values()) {
+      rows.sort((first, second) => first - second)
+      for (let index = 1; index < rows.length; index++) {
+        expect(rows[index] - rows[index - 1]).toBeGreaterThanOrEqual(100)
+      }
+    }
+    expect(edges.filter((edge) => edge.target === "meta-finalize")).toMatchObject([
+      { source: "meta-hierarchy-1", target: "meta-finalize" },
+    ])
+  })
+
+  it("centers a parent between child subtrees of different sizes", () => {
+    const tasks = [
+      createTask({ id: "root" }),
+      createTask({ id: "branch-a", parent_id: "root" }),
+      createTask({ id: "branch-b", parent_id: "root" }),
+      createTask({ id: "leaf-a1", parent_id: "branch-a" }),
+      createTask({ id: "leaf-a2", parent_id: "branch-a" }),
+      createTask({ id: "leaf-a3", parent_id: "branch-a" }),
+      createTask({ id: "leaf-b", parent_id: "branch-b" }),
+    ]
+
+    const { nodes } = getFlowGraph(tasks, "root", { x: 2, y: 3 })
+    const root = nodes.find((node) => node.id === "root")!
+    const branchA = nodes.find((node) => node.id === "branch-a")!
+    const branchB = nodes.find((node) => node.id === "branch-b")!
+    const branchALeaves = nodes.filter((node) => node.id.startsWith("leaf-a"))
+    const branchBLeaf = nodes.find((node) => node.id === "leaf-b")!
+
+    expect(root.position).toEqual({ x: 360, y: 300 })
+    expect(root.position.y).toBe((branchA.position.y + branchB.position.y) / 2)
+    expect(Math.max(...branchALeaves.map((node) => node.position.y))).toBeLessThan(branchBLeaf.position.y)
+  })
+
   it("connects stored children when the child's parent metadata is missing", () => {
     const tasks = [
       createTask({ id: "root", children: ["channel"] }),
@@ -184,5 +252,55 @@ describe("getFlowGraph", () => {
 
     expect(nodes[0].position.x).toBe(5 * 180)
     expect(nodes[0].position.y).toBe(3 * 100)
+  })
+})
+
+describe("getLayoutKey", () => {
+  const root = createTask({ id: "root" })
+  const child = createTask({ id: "child", parent_id: "root", state: TaskState.STARTED })
+
+  it("ignores progress and state, which never move a node", () => {
+    const reported = { ...child, state: TaskState.SUCCESS, progress: { current: 4, total: 10, updated_at: new Date() } }
+
+    expect(getLayoutKey([root, reported], "root")).toBe(getLayoutKey([root, child], "root"))
+    expect(getLayoutKey([child, root], "root")).toBe(getLayoutKey([root, child], "root"))
+  })
+
+  it("changes when a task joins or moves in the tree", () => {
+    const base = getLayoutKey([root, child], "root")
+
+    expect(getLayoutKey([root, child, createTask({ id: "other", parent_id: "root" })], "root")).not.toBe(base)
+    expect(getLayoutKey([root, { ...child, parent_id: "other" }], "root")).not.toBe(base)
+    expect(getLayoutKey([root, child], "child")).not.toBe(base)
+  })
+
+  it("changes when a stored children list adopts a parentless task", () => {
+    const orphan = createTask({ id: "orphan" })
+    const before = [root, child, orphan]
+    const after = [{ ...root, children: ["orphan"] }, child, orphan]
+
+    expect(getLayoutKey(after, "root")).not.toBe(getLayoutKey(before, "root"))
+    expect(getFlowGraph(after, "root").nodes.map((node) => node.id)).toContain("orphan")
+    expect(getLayoutKey([{ ...root, children: ["b", "a"] }], "root")).toBe(
+      getLayoutKey([{ ...root, children: ["a", "b"] }], "root"),
+    )
+  })
+})
+
+describe("refreshNodeData", () => {
+  it("keeps positions and finds tasks whose own id ends in -replaced", () => {
+    const real = createTask({ id: "import-replaced" })
+    const other = createTask({ id: "import" })
+    const { nodes } = getFlowGraph(
+      [createTask({ id: "root" }), { ...real, parent_id: "root" }, { ...other, parent_id: "root" }],
+      "root",
+    )
+    const updated = { ...real, parent_id: "root", state: TaskState.FAILURE }
+
+    const refreshed = refreshNodeData(nodes, [createTask({ id: "root" }), updated, { ...other, parent_id: "root" }])
+
+    const node = refreshed.find((candidate) => candidate.id === "import-replaced")
+    expect(node?.data).toBe(updated)
+    expect(node?.position).toEqual(nodes.find((candidate) => candidate.id === "import-replaced")?.position)
   })
 })

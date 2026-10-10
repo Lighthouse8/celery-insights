@@ -36,6 +36,9 @@ describe("DEMO_SCHEMA", () => {
       "sent_at",
       "received_at",
       "started_at",
+      "execution_active",
+      "execution_observed_at",
+      "execution_active_at",
       "succeeded_at",
       "failed_at",
       "retried_at",
@@ -43,6 +46,7 @@ describe("DEMO_SCHEMA", () => {
       "rejected_at",
       "runtime",
       "last_updated",
+      "last_updated_observed",
       "args",
       "kwargs",
       "eta",
@@ -59,6 +63,12 @@ describe("DEMO_SCHEMA", () => {
       "result_truncated",
       "exception",
       "traceback",
+      "progress",
+      "progress.current",
+      "progress.total",
+      "progress.description",
+      "progress.updated_at",
+      "last_started_at",
     ]
     for (const field of expectedFields) {
       expect(DEMO_SCHEMA).toContain(`DEFINE FIELD OVERWRITE ${field} ON task`)

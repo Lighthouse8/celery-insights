@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import math
+import random
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -10,7 +12,27 @@ from surrealdb_client import get_db
 
 logger = logging.getLogger(__name__)
 
+# Custom event a task sends with ``self.send_event("task-progress", current=..., total=..., description=...)``.
+PROGRESS_EVENT_TYPE = "task-progress"
+PROGRESS_DESCRIPTION_MAX_LENGTH = 200
+# Larger numbers lose precision in SurrealDB and JavaScript, and math.isfinite overflows on huge ints.
+PROGRESS_MAX_NUMBER = 2**53
+
 TERMINAL_EVENT_TYPES = frozenset({"task-succeeded", "task-failed", "task-revoked", "task-rejected"})
+TERMINAL_TASK_STATES = ("SUCCESS", "FAILURE", "REVOKED", "REJECTED", "IGNORED")
+TERMINAL_TASK_STATES_SQL = "[" + ", ".join(f"'{state}'" for state in TERMINAL_TASK_STATES) + "]"
+
+# SurrealDB rejects a commit whose rows another transaction is writing, and marks the error
+# as retryable. The batch is retried in place a few times before it goes back to the buffer.
+# Matched against the message text, as observed with SurrealDB 3.3.0: "... This transaction can be retried".
+RETRYABLE_CONFLICT_MARKER = "can be retried"
+CONFLICT_RETRIES = 3
+CONFLICT_BACKOFF_SECONDS = 0.05
+
+
+class TransactionConflictError(RuntimeError):
+    """A SurrealDB commit kept conflicting with concurrent writes after its retries."""
+
 
 EVENT_STATE_MAP: dict[str, str] = {
     "task-sent": "PENDING",
@@ -102,6 +124,9 @@ class SurrealDBIngester:
         self._dropped_count = 0
         self._stats_events_total = 0
         self._stats_flushes_total = 0
+        # The consume loop and the flush timer both flush; two transactions in flight
+        # conflict on the same task and workflow rows.
+        self._flush_lock = asyncio.Lock()
 
     def start(self) -> None:
         self._consume_task = asyncio.create_task(self._consume_loop())
@@ -155,8 +180,19 @@ class SurrealDBIngester:
                 await self._flush()
 
     async def _flush(self) -> None:
+        async with self._flush_lock:
+            terminal_task_ids = await self._flush_buffer()
+        # The result fetch can block on the result backend; only the transaction needs the lock.
+        if terminal_task_ids and self.on_terminal:
+            try:
+                await self.on_terminal(terminal_task_ids)
+            except Exception:
+                logger.exception("Terminal event callback failed for %d tasks", len(terminal_task_ids))
+
+    async def _flush_buffer(self) -> list[str]:
+        """Commit the buffered events and return the terminal task ids that were written."""
         if not self._buffer:
-            return
+            return []
 
         events = self._buffer
         self._buffer = []
@@ -170,7 +206,14 @@ class SurrealDBIngester:
             event_type = event.get("type", "")
             category = event_type.split("-", 1)[0] if "-" in event_type else ""
 
-            if category == "task":
+            if event_type == PROGRESS_EVENT_TYPE:
+                # Progress never changes state or workflow membership, so it skips the summary recompute.
+                q, p = build_task_progress_update(event, i)
+                if q:
+                    queries.append(q)
+                    params.update(p)
+
+            elif category == "task":
                 q, p = build_task_upsert(event, i, search_indexing_enabled=self.search_indexing_enabled)
                 if q:
                     queries.append(q)
@@ -209,28 +252,21 @@ class SurrealDBIngester:
 
         if queries:
             try:
-                db = get_db()
                 full_query = "BEGIN TRANSACTION;\n" + ";\n".join(queries) + ";\nCOMMIT TRANSACTION;"
-                response = await db.query_raw(full_query, params)
-                if "error" in response:
-                    raise RuntimeError(f"SurrealDB transaction failed: {response['error']}")
-                results = response.get("result", [])
-                errors = [result.get("result") for result in results if result.get("status") == "ERR"]
-                if errors:
-                    raise RuntimeError(f"SurrealDB transaction failed: {errors}")
+                await _commit(full_query, params)
                 self._stats_events_total += len(events)
                 self._stats_flushes_total += 1
                 logger.debug("Flushed %d events (%d queries) to SurrealDB", len(events), len(queries))
+            except TransactionConflictError as exc:
+                logger.warning("Keeping %d events for the next flush: %s", len(events), exc)
+                self._buffer = events + self._buffer
+                return []
             except Exception:
                 logger.exception("Failed to flush %d events to SurrealDB", len(events))
                 self._buffer = events + self._buffer
-                return
+                return []
 
-        if terminal_task_ids and self.on_terminal:
-            try:
-                await self.on_terminal(terminal_task_ids)
-            except Exception:
-                logger.exception("Terminal event callback failed for %d tasks", len(terminal_task_ids))
+        return terminal_task_ids
 
     async def _stats_loop(self) -> None:
         prev_events = 0
@@ -266,6 +302,28 @@ class SurrealDBIngester:
         logger.info("SurrealDB ingester stopped")
 
 
+async def _commit(query: str, params: dict) -> None:
+    """Run one transaction, retrying it while SurrealDB reports a retryable conflict."""
+    db = get_db()
+    for attempt in range(CONFLICT_RETRIES + 1):
+        response = await db.query_raw(query, params)
+        if "error" in response:
+            errors = [response["error"]]
+        else:
+            results = response.get("result", [])
+            errors = [result.get("result") for result in results if result.get("status") == "ERR"]
+        if not errors:
+            return
+        if not any(RETRYABLE_CONFLICT_MARKER in str(error) for error in errors):
+            raise RuntimeError(f"SurrealDB transaction failed: {errors}")
+        if attempt == CONFLICT_RETRIES:
+            raise TransactionConflictError(
+                f"SurrealDB transaction still conflicted after {CONFLICT_RETRIES} retries: {errors[-1]}"
+            )
+        logger.debug("SurrealDB transaction conflict, retrying (attempt %d)", attempt + 1)
+        await asyncio.sleep(CONFLICT_BACKOFF_SECONDS * 2**attempt * random.uniform(0.5, 1.0))
+
+
 def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = False) -> tuple[str, dict]:
     """Build a conditional UPSERT for a task event with out-of-order protection."""
     task_id = event.get("uuid")
@@ -288,18 +346,26 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
         f"{p}_workflow_id": workflow_id,
     }
 
+    apply_state = f"${p}_previous.last_updated IS NONE OR <datetime>${p}_ts > ${p}_previous.last_updated"
+    if event_type in TERMINAL_EVENT_TYPES:
+        # An observed last_updated is monitor time, not task evidence: terminal events replace it even when older,
+        # unless it already holds a different terminal state.
+        apply_state += (
+            f" OR (${p}_previous.last_updated_observed = true"
+            f" AND (${p}_previous.state NOT IN {TERMINAL_TASK_STATES_SQL} OR ${p}_previous.state = ${p}_state))"
+        )
+
     set_clauses = [
-        f"state = IF ${p}_previous.last_updated IS NONE OR <datetime>${p}_ts > ${p}_previous.last_updated"
-        f" THEN ${p}_state ELSE ${p}_previous.state END",
-        f"last_updated = IF ${p}_previous.last_updated IS NONE OR <datetime>${p}_ts > ${p}_previous.last_updated"
-        f" THEN <datetime>${p}_ts ELSE ${p}_previous.last_updated END",
+        f"state = IF ${p}_apply THEN ${p}_state ELSE ${p}_previous.state END",
+        f"last_updated = IF ${p}_apply THEN <datetime>${p}_ts ELSE ${p}_previous.last_updated END",
+        f"last_updated_observed = IF ${p}_apply THEN false ELSE ${p}_previous.last_updated_observed ?? false END",
         f"{ts_field} = IF ${p}_previous.{ts_field} IS NONE OR <datetime>${p}_ts < ${p}_previous.{ts_field}"
         f" THEN <datetime>${p}_ts ELSE ${p}_previous.{ts_field} END",
         f"first_observed_at = IF ${p}_previous.first_observed_at IS NONE"
         f" OR <datetime>${p}_ts < ${p}_previous.first_observed_at"
         f" THEN <datetime>${p}_ts ELSE ${p}_previous.first_observed_at END",
         # The workflow follows root_id, so an older event can't regroup a task whose root is already known.
-        f"workflow_id = IF ${p}_previous.root_id IS NONE OR ${p}_previous.last_updated IS NONE"
+        f"workflow_id = IF ${p}_previous.root_id IS NONE OR ${p}_apply"
         f" OR <datetime>${p}_ts >= ${p}_previous.last_updated"
         f" THEN ${p}_workflow_id ELSE ${p}_previous.workflow_id ?? ${p}_workflow_id END"
         if event.get("root_id")
@@ -309,15 +375,41 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
     if event_type == "task-failed" or event.get("exception") or event.get("traceback"):
         set_clauses.append("had_error = true")
 
+    if event_type in ("task-retried", "task-started"):
+        # A retry starts from zero, so both events drop progress reported before them. task-retried
+        # comes from the failed attempt's own worker, whose clock orders that attempt's reports even
+        # when the next attempt's worker clock runs behind. Reports that carry their attempt are
+        # ordered by it instead, so a delayed retry event can't clear the next attempt's progress.
+        set_clauses.append(
+            f"progress = IF ${p}_previous.progress.attempt IS NONE"
+            f" AND ${p}_previous.progress.updated_at < <datetime>${p}_ts"
+            f" THEN NONE ELSE ${p}_previous.progress END"
+        )
+    if event_type == "task-started":
+        # started_at keeps the first attempt's start; the latest one, on the new attempt's own clock,
+        # rejects late reports from an earlier attempt without rejecting this attempt's.
+        set_clauses.append(
+            f"last_started_at = IF ${p}_previous.last_started_at IS NONE"
+            f" OR <datetime>${p}_ts > ${p}_previous.last_started_at"
+            f" THEN <datetime>${p}_ts ELSE ${p}_previous.last_started_at END"
+        )
+
+    # Fields follow an applied state even when it is older than an observed last_updated; `>=` lets
+    # an event with the same timestamp still fill them.
+    apply_fields = f"${p}_apply OR <datetime>${p}_ts >= ${p}_previous.last_updated"
     for event_field, db_field in TASK_FIELD_MAP.items():
         value = event.get(event_field)
         if value is not None:
             pname = f"{p}_{db_field}"
             params[pname] = value if isinstance(value, int | float) else str(value)
+            if db_field == "retries" and isinstance(value, int) and not isinstance(value, bool):
+                # Retries only go up, and a retry's task-received can come from a worker whose
+                # clock is behind; progress ordering by attempt needs the latest count.
+                set_clauses.append(f"retries = math::max([${p}_previous.retries ?? 0, ${pname}])")
+                continue
             # Result polling can observe a newer state before send/receive metadata arrives.
             set_clauses.append(
-                f"{db_field} = IF ${p}_previous.{db_field} IS NONE OR ${p}_previous.last_updated IS NONE"
-                f" OR <datetime>${p}_ts >= ${p}_previous.last_updated"
+                f"{db_field} = IF ${p}_previous.{db_field} IS NONE OR {apply_fields}"
                 f" THEN ${pname} ELSE ${p}_previous.{db_field} END"
             )
 
@@ -325,30 +417,29 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
     if hostname:
         params[f"{p}_worker"] = hostname
         set_clauses.append(
-            f"worker = IF ${p}_previous.worker IS NONE OR ${p}_previous.last_updated IS NONE"
-            f" OR <datetime>${p}_ts >= ${p}_previous.last_updated"
-            f" THEN ${p}_worker ELSE ${p}_previous.worker END"
+            f"worker = IF ${p}_previous.worker IS NONE OR {apply_fields} THEN ${p}_worker ELSE ${p}_previous.worker END"
         )
 
     if event.get("kwargs") is not None:
         set_clauses.append(
-            f"kwargs_search_source = IF ${p}_previous.kwargs IS NONE OR ${p}_previous.last_updated IS NONE "
-            f"OR <datetime>${p}_ts >= ${p}_previous.last_updated "
+            f"kwargs_search_source = IF ${p}_previous.kwargs IS NONE OR {apply_fields} "
             f"THEN 'saferepr' ELSE ${p}_previous.kwargs_search_source END"
         )
     target = f"type::record('task', ${p}_id)"
     assignments = ", ".join(set_clauses)
     # Read persisted values explicitly: UPSERT can evaluate against a creation
     # candidate, including multiple updates to the same task in one transaction.
-    query = f"LET ${p}_previous = (SELECT * FROM {target})[0] ?? {{}}; UPSERT {target} SET {assignments}"
+    query = (
+        f"LET ${p}_previous = (SELECT * FROM {target})[0] ?? {{}}; "
+        f"LET ${p}_apply = {apply_state}; "
+        f"UPSERT {target} SET {assignments}"
+    )
     if search_indexing_enabled and event.get("kwargs") is not None:
         terms = kwargs_search_terms(str(event["kwargs"]), "saferepr")
         params[f"{p}_search_terms"] = terms.terms
         params[f"{p}_search_fallback"] = terms.fallback
         query += (
-            f"; IF ${p}_previous.kwargs != ${p}_kwargs AND (${p}_previous.kwargs IS NONE "
-            f"OR ${p}_previous.last_updated IS NONE "
-            f"OR <datetime>${p}_ts >= ${p}_previous.last_updated) "
+            f"; IF ${p}_previous.kwargs != ${p}_kwargs AND (${p}_previous.kwargs IS NONE OR {apply_fields}) "
             "AND (SELECT VALUE enabled FROM search_config:current)[0] = true { "
             f"UPDATE type::record('task_search', ${p}_id) SET kwargs_terms = ${p}_search_terms, "
             f"kwargs_fallback = ${p}_search_fallback; }}"
@@ -361,6 +452,69 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
             f" WHERE ${p}_previous.workflow_id != NONE AND ${p}_previous.workflow_id != ${p}_workflow_id"
             f" AND (SELECT VALUE id FROM task WHERE workflow_id = ${p}_previous.workflow_id LIMIT 1) = []"
         )
+    return query, params
+
+
+def _progress_number(value: object) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value if 0 <= value <= PROGRESS_MAX_NUMBER else None
+
+
+def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
+    """Build an UPDATE that records a task's latest reported progress.
+
+    UPDATE never creates a record, so progress for a task Celery Insights has not seen is dropped
+    instead of failing the batch on the schema's required task fields.
+    """
+    task_id = event.get("uuid")
+    timestamp = event.get("timestamp")
+    current = _progress_number(event.get("current"))
+    # An unusable total (zero, negative, not a number) drops only the total, not the report.
+    total = _progress_number(event.get("total")) or None
+
+    if not task_id or not timestamp or current is None:
+        return "", {}
+
+    p = f"pg{idx}"
+    params: dict = {f"{p}_id": task_id, f"{p}_ts": _epoch_to_iso(timestamp), f"{p}_current": current}
+    fields = [f"current: ${p}_current", f"updated_at: <datetime>${p}_ts"]
+    if total is not None:
+        params[f"{p}_total"] = total
+        fields.append(f"total: ${p}_total")
+    description = event.get("description")
+    if description is not None:
+        params[f"{p}_description"] = str(description)[:PROGRESS_DESCRIPTION_MAX_LENGTH]
+        fields.append(f"description: ${p}_description")
+
+    attempt = event.get("attempt")
+    if isinstance(attempt, int) and not isinstance(attempt, bool) and 0 <= attempt <= PROGRESS_MAX_NUMBER:
+        # The attempt (the task's retry count) orders reports across workers whose clocks
+        # disagree: a later attempt always wins, time only orders reports within one attempt,
+        # and a report from an attempt before the task's current retries is ignored.
+        params[f"{p}_attempt"] = attempt
+        fields.append(f"attempt: ${p}_attempt")
+        accept = (
+            f"${p}_attempt >= (retries ?? 0) AND (progress.attempt IS NONE"
+            f" OR ${p}_attempt > progress.attempt"
+            f" OR (${p}_attempt = progress.attempt AND <datetime>${p}_ts >= progress.updated_at))"
+        )
+    else:
+        # Without an attempt, worker timestamps decide, which assumes the workers' clocks agree.
+        # A tagged report is never replaced by an untagged one, so the outcome doesn't depend
+        # on which of the two arrives first.
+        accept = (
+            f"progress.attempt IS NONE"
+            f" AND (progress.updated_at IS NONE OR <datetime>${p}_ts >= progress.updated_at)"
+            f" AND (last_started_at IS NONE OR <datetime>${p}_ts >= last_started_at)"
+        )
+
+    query = (
+        f"UPDATE type::record('task', ${p}_id) SET progress = "
+        f"IF {accept} THEN {{ {', '.join(fields)} }} ELSE progress END"
+    )
     return query, params
 
 
@@ -547,6 +701,12 @@ def build_worker_upsert(event: dict, idx: int) -> tuple[str, dict]:
             )
 
     query = f"UPSERT type::record('worker', ${p}_id) SET " + ", ".join(set_clauses)
+    if status == "offline":
+        # Polls skip offline workers, so observations made before the worker left would otherwise outlive it.
+        query += (
+            f"; UPDATE task SET execution_active = NONE WHERE worker = ${p}_id AND state = 'STARTED'"
+            f" AND execution_active != NONE AND execution_observed_at <= <datetime>${p}_ts"
+        )
     return query, params
 
 
