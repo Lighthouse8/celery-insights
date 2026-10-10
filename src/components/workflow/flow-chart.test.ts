@@ -273,6 +273,18 @@ describe("getLayoutKey", () => {
     expect(getLayoutKey([root, { ...child, parent_id: "other" }], "root")).not.toBe(base)
     expect(getLayoutKey([root, child], "child")).not.toBe(base)
   })
+
+  it("changes when a stored children list adopts a parentless task", () => {
+    const orphan = createTask({ id: "orphan" })
+    const before = [root, child, orphan]
+    const after = [{ ...root, children: ["orphan"] }, child, orphan]
+
+    expect(getLayoutKey(after, "root")).not.toBe(getLayoutKey(before, "root"))
+    expect(getFlowGraph(after, "root").nodes.map((node) => node.id)).toContain("orphan")
+    expect(getLayoutKey([{ ...root, children: ["b", "a"] }], "root")).toBe(
+      getLayoutKey([{ ...root, children: ["a", "b"] }], "root"),
+    )
+  })
 })
 
 describe("refreshNodeData", () => {

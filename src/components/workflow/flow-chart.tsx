@@ -117,11 +117,14 @@ export const getFlowGraph = (
 }
 
 /**
- * Node positions and edges depend only on these, so a progress report or state
- * change can update node data without re-laying out (and moving) the graph.
+ * Node positions and edges depend only on each task's parent and its stored children (which can adopt a
+ * parentless child), so a progress report or state change can update node data without re-laying out the graph.
  */
 export const getLayoutKey = (tasks: Task[], rootTaskId: string): string =>
-  [rootTaskId, ...tasks.map((task) => `${task.id}<${task.parent_id ?? ""}`).sort()].join("|")
+  [
+    rootTaskId,
+    ...tasks.map((task) => `${task.id}<${task.parent_id ?? ""}>${[...task.children].sort().join(",")}`).sort(),
+  ].join("|")
 
 /** Swap in each node's latest task without moving it. */
 export const refreshNodeData = (nodes: Node[], tasks: Task[]): Node[] => {
