@@ -343,6 +343,8 @@ const DATETIME_FIELDS: Record<"task" | "event" | "worker", readonly string[]> = 
     "first_observed_at",
     "last_started_at",
     "progress.updated_at",
+    "execution_observed_at",
+    "execution_active_at",
   ],
   event: ["timestamp"],
   worker: ["last_updated"],

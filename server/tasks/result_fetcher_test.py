@@ -35,14 +35,18 @@ class TestTruncateResult:
 
 
 class TestBuildTaskMetaUpsert:
-    def test_missing_invocation_fields_keep_stored_values(self):
-        query, params = _build_task_meta_upsert("x", {"status": "STARTED"})
+    @pytest.mark.parametrize("search_indexing_enabled", [False, True])
+    def test_missing_invocation_fields_keep_stored_values(self, *, search_indexing_enabled: bool):
+        query, params = _build_task_meta_upsert(
+            "x", {"status": "STARTED"}, search_indexing_enabled=search_indexing_enabled
+        )
         for field in ("type", "args", "kwargs", "worker", "routing_key"):
             assert params[field] is None
             assert f"THEN ${field} ?? $meta_previous.{field}" in query
         # Retries only go up, so missing metadata keeps the stored count.
         assert params["retries"] is None
         assert "retries = IF $retries = NONE THEN $meta_previous.retries" in query
+        assert "task_search" not in query
 
     def test_extended_invocation_fields_are_written(self):
         meta = {"status": "SUCCESS", "name": "t", "args": [1], "kwargs": {}, "retries": None, "queue": "q"}

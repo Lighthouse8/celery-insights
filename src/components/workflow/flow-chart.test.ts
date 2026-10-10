@@ -3,38 +3,6 @@ import { TaskState } from "@/types/surreal-records"
 import { getFlowGraph, getLayoutKey, refreshNodeData } from "./flow-chart"
 
 describe("getFlowGraph", () => {
-  it("connects stored children when the child's parent metadata is missing", () => {
-    const tasks = [
-      createTask({ id: "root", children: ["channel"] }),
-      createTask({ id: "channel", parent_id: "root", children: ["resource", "resource", "expired"] }),
-      createTask({ id: "resource", children: ["hierarchy"] }),
-      createTask({ id: "hierarchy" }),
-    ]
-
-    const { nodes, edges } = getFlowGraph(tasks, "root")
-
-    expect(nodes.map((node) => node.id)).toEqual(["root", "channel", "resource", "hierarchy"])
-    expect(edges.map((edge) => [edge.source, edge.target])).toEqual([
-      ["root", "channel"],
-      ["channel", "resource"],
-      ["resource", "hierarchy"],
-    ])
-  })
-
-  it("prefers an explicit parent over an older parent's children list", () => {
-    const tasks = [
-      createTask({ id: "root", children: ["child"] }),
-      createTask({ id: "actual-parent", parent_id: "root", children: ["child"] }),
-      createTask({ id: "child", parent_id: "actual-parent" }),
-    ]
-    const { edges } = getFlowGraph(tasks, "root")
-
-    expect(edges.map((edge) => [edge.source, edge.target])).toEqual([
-      ["root", "actual-parent"],
-      ["actual-parent", "child"],
-    ])
-  })
-
   it("keeps nested channel and resource branches in separate rows", () => {
     const tasks = [
       createTask({ id: "root" }),
@@ -102,6 +70,37 @@ describe("getFlowGraph", () => {
     expect(Math.max(...branchALeaves.map((node) => node.position.y))).toBeLessThan(branchBLeaf.position.y)
   })
 
+  it("connects stored children when the child's parent metadata is missing", () => {
+    const tasks = [
+      createTask({ id: "root", children: ["channel"] }),
+      createTask({ id: "channel", parent_id: "root", children: ["resource", "resource", "expired"] }),
+      createTask({ id: "resource", children: ["hierarchy"] }),
+      createTask({ id: "hierarchy" }),
+    ]
+
+    const { nodes, edges } = getFlowGraph(tasks, "root")
+
+    expect(nodes.map((node) => node.id)).toEqual(["root", "channel", "resource", "hierarchy"])
+    expect(edges.map((edge) => [edge.source, edge.target])).toEqual([
+      ["root", "channel"],
+      ["channel", "resource"],
+      ["resource", "hierarchy"],
+    ])
+  })
+
+  it("prefers an explicit parent over an older parent's children list", () => {
+    const tasks = [
+      createTask({ id: "root", children: ["child"] }),
+      createTask({ id: "actual-parent", parent_id: "root", children: ["child"] }),
+      createTask({ id: "child", parent_id: "actual-parent" }),
+    ]
+    const { edges } = getFlowGraph(tasks, "root")
+
+    expect(edges.map((edge) => [edge.source, edge.target])).toEqual([
+      ["root", "actual-parent"],
+      ["actual-parent", "child"],
+    ])
+  })
   it("gives a parentless child one parent when several stored children lists claim it", () => {
     const tasks = [
       createTask({ id: "root", children: ["a", "b"] }),

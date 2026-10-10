@@ -2,10 +2,12 @@ import asyncio
 import json
 import logging
 import math
+import random
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
+from tasks.task_search import kwargs_search_terms
 from surrealdb_client import get_db
 
 logger = logging.getLogger(__name__)
@@ -19,6 +21,17 @@ PROGRESS_MAX_NUMBER = 2**53
 TERMINAL_EVENT_TYPES = frozenset({"task-succeeded", "task-failed", "task-revoked", "task-rejected"})
 TERMINAL_TASK_STATES = ("SUCCESS", "FAILURE", "REVOKED", "REJECTED", "IGNORED")
 TERMINAL_TASK_STATES_SQL = "[" + ", ".join(f"'{state}'" for state in TERMINAL_TASK_STATES) + "]"
+
+# SurrealDB rejects a commit whose rows another transaction is writing, and marks the error
+# as retryable. The batch is retried in place a few times before it goes back to the buffer.
+RETRYABLE_CONFLICT_MARKER = "can be retried"
+CONFLICT_RETRIES = 3
+CONFLICT_BACKOFF_SECONDS = 0.05
+
+
+class TransactionConflictError(RuntimeError):
+    """A SurrealDB commit kept conflicting with concurrent writes after its retries."""
+
 
 EVENT_STATE_MAP: dict[str, str] = {
     "task-sent": "PENDING",
@@ -94,9 +107,12 @@ class SurrealDBIngester:
         queue: asyncio.Queue[dict],
         batch_interval_ms: int = 100,
         on_terminal: Callable[[list[str]], Awaitable[None]] | None = None,
+        *,
+        search_indexing_enabled: bool = False,
     ):
         self.queue = queue
         self.batch_interval_ms = batch_interval_ms
+        self.search_indexing_enabled = search_indexing_enabled
         self.on_terminal = on_terminal
         self._buffer: list[dict] = []
         self._has_terminal = False
@@ -107,6 +123,9 @@ class SurrealDBIngester:
         self._dropped_count = 0
         self._stats_events_total = 0
         self._stats_flushes_total = 0
+        # The consume loop and the flush timer both flush; two transactions in flight
+        # conflict on the same task and workflow rows.
+        self._flush_lock = asyncio.Lock()
 
     def start(self) -> None:
         self._consume_task = asyncio.create_task(self._consume_loop())
@@ -160,6 +179,10 @@ class SurrealDBIngester:
                 await self._flush()
 
     async def _flush(self) -> None:
+        async with self._flush_lock:
+            await self._flush_buffer()
+
+    async def _flush_buffer(self) -> None:
         if not self._buffer:
             return
 
@@ -183,7 +206,7 @@ class SurrealDBIngester:
                     params.update(p)
 
             elif category == "task":
-                q, p = build_task_upsert(event, i)
+                q, p = build_task_upsert(event, i, search_indexing_enabled=self.search_indexing_enabled)
                 if q:
                     queries.append(q)
                     params.update(p)
@@ -221,18 +244,15 @@ class SurrealDBIngester:
 
         if queries:
             try:
-                db = get_db()
                 full_query = "BEGIN TRANSACTION;\n" + ";\n".join(queries) + ";\nCOMMIT TRANSACTION;"
-                response = await db.query_raw(full_query, params)
-                if "error" in response:
-                    raise RuntimeError(f"SurrealDB transaction failed: {response['error']}")
-                results = response.get("result", [])
-                errors = [result.get("result") for result in results if result.get("status") == "ERR"]
-                if errors:
-                    raise RuntimeError(f"SurrealDB transaction failed: {errors}")
+                await _commit(full_query, params)
                 self._stats_events_total += len(events)
                 self._stats_flushes_total += 1
                 logger.debug("Flushed %d events (%d queries) to SurrealDB", len(events), len(queries))
+            except TransactionConflictError as exc:
+                logger.warning("Keeping %d events for the next flush: %s", len(events), exc)
+                self._buffer = events + self._buffer
+                return
             except Exception:
                 logger.exception("Failed to flush %d events to SurrealDB", len(events))
                 self._buffer = events + self._buffer
@@ -278,7 +298,29 @@ class SurrealDBIngester:
         logger.info("SurrealDB ingester stopped")
 
 
-def build_task_upsert(event: dict, idx: int) -> tuple[str, dict]:
+async def _commit(query: str, params: dict) -> None:
+    """Run one transaction, retrying it while SurrealDB reports a retryable conflict."""
+    db = get_db()
+    for attempt in range(CONFLICT_RETRIES + 1):
+        response = await db.query_raw(query, params)
+        if "error" in response:
+            errors = [response["error"]]
+        else:
+            results = response.get("result", [])
+            errors = [result.get("result") for result in results if result.get("status") == "ERR"]
+        if not errors:
+            return
+        if not any(RETRYABLE_CONFLICT_MARKER in str(error) for error in errors):
+            raise RuntimeError(f"SurrealDB transaction failed: {errors}")
+        if attempt == CONFLICT_RETRIES:
+            raise TransactionConflictError(
+                f"SurrealDB transaction still conflicted after {CONFLICT_RETRIES} retries: {errors[-1]}"
+            )
+        logger.debug("SurrealDB transaction conflict, retrying (attempt %d)", attempt + 1)
+        await asyncio.sleep(CONFLICT_BACKOFF_SECONDS * 2**attempt * random.uniform(0.5, 1.0))
+
+
+def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = False) -> tuple[str, dict]:
     """Build a conditional UPSERT for a task event with out-of-order protection."""
     task_id = event.get("uuid")
     event_type = event.get("type", "")
@@ -374,6 +416,11 @@ def build_task_upsert(event: dict, idx: int) -> tuple[str, dict]:
             f"worker = IF ${p}_previous.worker IS NONE OR {apply_fields} THEN ${p}_worker ELSE ${p}_previous.worker END"
         )
 
+    if event.get("kwargs") is not None:
+        set_clauses.append(
+            f"kwargs_search_source = IF ${p}_previous.kwargs IS NONE OR {apply_fields} "
+            f"THEN 'saferepr' ELSE ${p}_previous.kwargs_search_source END"
+        )
     target = f"type::record('task', ${p}_id)"
     assignments = ", ".join(set_clauses)
     # Read persisted values explicitly: UPSERT can evaluate against a creation
@@ -383,6 +430,16 @@ def build_task_upsert(event: dict, idx: int) -> tuple[str, dict]:
         f"LET ${p}_apply = {apply_state}; "
         f"UPSERT {target} SET {assignments}"
     )
+    if search_indexing_enabled and event.get("kwargs") is not None:
+        terms = kwargs_search_terms(str(event["kwargs"]), "saferepr")
+        params[f"{p}_search_terms"] = terms.terms
+        params[f"{p}_search_fallback"] = terms.fallback
+        query += (
+            f"; IF ${p}_previous.kwargs != ${p}_kwargs AND (${p}_previous.kwargs IS NONE OR {apply_fields}) "
+            "AND (SELECT VALUE enabled FROM search_config:current)[0] = true { "
+            f"UPDATE type::record('task_search', ${p}_id) SET kwargs_terms = ${p}_search_terms, "
+            f"kwargs_fallback = ${p}_search_fallback; }}"
+        )
     if event.get("root_id"):
         # Polling stores a task under its own id before ancestry arrives. Moving it to the real root
         # leaves that workflow empty, so drop it rather than list a phantom single-task workflow.
