@@ -13,7 +13,7 @@ const TaskNode: React.FC<NodeProps<TaskNodeType>> = ({ data }) => {
     <>
       <Handle type="target" position={Position.Left} />
       <div className="relative animate-in zoom-in-75 fade-in duration-300">
-        <TaskAvatar taskId={data.id} type={data.type} status={data.state} className="size-[60px]" />
+        <TaskAvatar taskId={data.id} type={data.type} status={data.state} execution={data} className="size-[60px]" />
         {progressPercent !== undefined ? (
           // Absolutely positioned so the bar never changes the node size the layout was computed for.
           <Progress value={progressPercent} className="absolute -bottom-2 left-0 h-1" aria-label="Task progress" />

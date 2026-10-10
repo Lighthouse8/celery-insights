@@ -42,7 +42,7 @@ class TestBuildTaskMetaUpsert:
         )
         for field in ("type", "args", "kwargs", "worker", "routing_key"):
             assert params[field] is None
-            assert f"{field} = ${field} ?? $meta_previous.{field}" in query
+            assert f"THEN ${field} ?? $meta_previous.{field}" in query
         # Retries only go up, so missing metadata keeps the stored count.
         assert params["retries"] is None
         assert "retries = IF $retries = NONE THEN $meta_previous.retries" in query
