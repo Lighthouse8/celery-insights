@@ -4,7 +4,7 @@ import { useIsDark } from "@hooks/use-is-dark"
 import type { Task } from "@/types/surreal-records"
 import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
 import { toSvg } from "html-to-image"
-import React, { useCallback, useEffect, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Background,
   ControlButton,
@@ -107,6 +107,26 @@ export const getFlowGraph = (
   }
 }
 
+/**
+ * Node positions and edges depend only on each task's parent and its stored children (which can adopt a
+ * parentless child), so a progress report or state change can update node data without re-laying out the graph.
+ */
+export const getLayoutKey = (tasks: Task[], rootTaskId: string): string =>
+  [
+    rootTaskId,
+    ...tasks.map((task) => `${task.id}<${task.parent_id ?? ""}>${[...task.children].sort().join(",")}`).sort(),
+  ].join("|")
+
+/** Swap in each node's latest task without moving it. */
+export const refreshNodeData = (nodes: Node[], tasks: Task[]): Node[] => {
+  const tasksById = new Map(tasks.map((task) => [task.id, task]))
+  return nodes.map((node) => {
+    // Duplicated nodes get a "-replaced" id but keep their task in data.
+    const task = tasksById.get((node.data as unknown as Task).id)
+    return task && task !== (node.data as unknown) ? { ...node, data: task as Task & Record<string, unknown> } : node
+  })
+}
+
 const FOCUS_ZOOM = 1
 const ZOOM_ANIMATION_SPEED = 1000
 
@@ -153,6 +173,8 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
 
   const fitView = useCallback(() => flow.fitView({ duration: ZOOM_ANIMATION_SPEED }), [flow])
 
+  const layoutKey = useMemo(() => getLayoutKey(tasks, rootTaskId), [tasks, rootTaskId])
+
   useEffect(() => {
     const graph = getFlowGraph(tasks, rootTaskId)
     setNodes(graph.nodes)
@@ -167,7 +189,10 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
     }
     setInitialized(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, rootTaskId, setNodes, setEdges, flow])
+  }, [layoutKey, setNodes, setEdges, flow])
+
+  // Any other change only refreshes node data, keeping each node where it is.
+  useEffect(() => setNodes((current) => refreshNodeData(current, tasks)), [tasks, setNodes])
 
   useEffect(() => {
     if (!currentTaskId) fitView()

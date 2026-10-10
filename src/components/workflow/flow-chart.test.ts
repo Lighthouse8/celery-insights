@@ -1,5 +1,6 @@
 import { createTask } from "@test-fixtures"
-import { getFlowGraph } from "./flow-chart"
+import { TaskState } from "@/types/surreal-records"
+import { getFlowGraph, getLayoutKey, refreshNodeData } from "./flow-chart"
 
 describe("getFlowGraph", () => {
   it("connects stored children when the child's parent metadata is missing", () => {
@@ -184,5 +185,55 @@ describe("getFlowGraph", () => {
 
     expect(nodes[0].position.x).toBe(5 * 180)
     expect(nodes[0].position.y).toBe(3 * 100)
+  })
+})
+
+describe("getLayoutKey", () => {
+  const root = createTask({ id: "root" })
+  const child = createTask({ id: "child", parent_id: "root", state: TaskState.STARTED })
+
+  it("ignores progress and state, which never move a node", () => {
+    const reported = { ...child, state: TaskState.SUCCESS, progress: { current: 4, total: 10, updated_at: new Date() } }
+
+    expect(getLayoutKey([root, reported], "root")).toBe(getLayoutKey([root, child], "root"))
+    expect(getLayoutKey([child, root], "root")).toBe(getLayoutKey([root, child], "root"))
+  })
+
+  it("changes when a task joins or moves in the tree", () => {
+    const base = getLayoutKey([root, child], "root")
+
+    expect(getLayoutKey([root, child, createTask({ id: "other", parent_id: "root" })], "root")).not.toBe(base)
+    expect(getLayoutKey([root, { ...child, parent_id: "other" }], "root")).not.toBe(base)
+    expect(getLayoutKey([root, child], "child")).not.toBe(base)
+  })
+
+  it("changes when a stored children list adopts a parentless task", () => {
+    const orphan = createTask({ id: "orphan" })
+    const before = [root, child, orphan]
+    const after = [{ ...root, children: ["orphan"] }, child, orphan]
+
+    expect(getLayoutKey(after, "root")).not.toBe(getLayoutKey(before, "root"))
+    expect(getFlowGraph(after, "root").nodes.map((node) => node.id)).toContain("orphan")
+    expect(getLayoutKey([{ ...root, children: ["b", "a"] }], "root")).toBe(
+      getLayoutKey([{ ...root, children: ["a", "b"] }], "root"),
+    )
+  })
+})
+
+describe("refreshNodeData", () => {
+  it("keeps positions and finds tasks whose own id ends in -replaced", () => {
+    const real = createTask({ id: "import-replaced" })
+    const other = createTask({ id: "import" })
+    const { nodes } = getFlowGraph(
+      [createTask({ id: "root" }), { ...real, parent_id: "root" }, { ...other, parent_id: "root" }],
+      "root",
+    )
+    const updated = { ...real, parent_id: "root", state: TaskState.FAILURE }
+
+    const refreshed = refreshNodeData(nodes, [createTask({ id: "root" }), updated, { ...other, parent_id: "root" }])
+
+    const node = refreshed.find((candidate) => candidate.id === "import-replaced")
+    expect(node?.data).toBe(updated)
+    expect(node?.position).toEqual(nodes.find((candidate) => candidate.id === "import-replaced")?.position)
   })
 })

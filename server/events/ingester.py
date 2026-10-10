@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -9,6 +10,12 @@ from tasks.task_search import kwargs_search_terms
 from surrealdb_client import get_db
 
 logger = logging.getLogger(__name__)
+
+# Custom event a task sends with ``self.send_event("task-progress", current=..., total=..., description=...)``.
+PROGRESS_EVENT_TYPE = "task-progress"
+PROGRESS_DESCRIPTION_MAX_LENGTH = 200
+# Larger numbers lose precision in SurrealDB and JavaScript, and math.isfinite overflows on huge ints.
+PROGRESS_MAX_NUMBER = 2**53
 
 TERMINAL_EVENT_TYPES = frozenset({"task-succeeded", "task-failed", "task-revoked", "task-rejected"})
 
@@ -170,7 +177,14 @@ class SurrealDBIngester:
             event_type = event.get("type", "")
             category = event_type.split("-", 1)[0] if "-" in event_type else ""
 
-            if category == "task":
+            if event_type == PROGRESS_EVENT_TYPE:
+                # Progress never changes state or workflow membership, so it skips the summary recompute.
+                q, p = build_task_progress_update(event, i)
+                if q:
+                    queries.append(q)
+                    params.update(p)
+
+            elif category == "task":
                 q, p = build_task_upsert(event, i, search_indexing_enabled=self.search_indexing_enabled)
                 if q:
                     queries.append(q)
@@ -309,11 +323,35 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
     if event_type == "task-failed" or event.get("exception") or event.get("traceback"):
         set_clauses.append("had_error = true")
 
+    if event_type in ("task-retried", "task-started"):
+        # A retry starts from zero, so both events drop progress reported before them. task-retried
+        # comes from the failed attempt's own worker, whose clock orders that attempt's reports even
+        # when the next attempt's worker clock runs behind. Reports that carry their attempt are
+        # ordered by it instead, so a delayed retry event can't clear the next attempt's progress.
+        set_clauses.append(
+            f"progress = IF ${p}_previous.progress.attempt IS NONE"
+            f" AND ${p}_previous.progress.updated_at < <datetime>${p}_ts"
+            f" THEN NONE ELSE ${p}_previous.progress END"
+        )
+    if event_type == "task-started":
+        # started_at keeps the first attempt's start; the latest one, on the new attempt's own clock,
+        # rejects late reports from an earlier attempt without rejecting this attempt's.
+        set_clauses.append(
+            f"last_started_at = IF ${p}_previous.last_started_at IS NONE"
+            f" OR <datetime>${p}_ts > ${p}_previous.last_started_at"
+            f" THEN <datetime>${p}_ts ELSE ${p}_previous.last_started_at END"
+        )
+
     for event_field, db_field in TASK_FIELD_MAP.items():
         value = event.get(event_field)
         if value is not None:
             pname = f"{p}_{db_field}"
             params[pname] = value if isinstance(value, int | float) else str(value)
+            if db_field == "retries" and isinstance(value, int) and not isinstance(value, bool):
+                # Retries only go up, and a retry's task-received can come from a worker whose
+                # clock is behind; progress ordering by attempt needs the latest count.
+                set_clauses.append(f"retries = math::max([${p}_previous.retries ?? 0, ${pname}])")
+                continue
             # Result polling can observe a newer state before send/receive metadata arrives.
             set_clauses.append(
                 f"{db_field} = IF ${p}_previous.{db_field} IS NONE OR ${p}_previous.last_updated IS NONE"
@@ -361,6 +399,69 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
             f" WHERE ${p}_previous.workflow_id != NONE AND ${p}_previous.workflow_id != ${p}_workflow_id"
             f" AND (SELECT VALUE id FROM task WHERE workflow_id = ${p}_previous.workflow_id LIMIT 1) = []"
         )
+    return query, params
+
+
+def _progress_number(value: object) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value if 0 <= value <= PROGRESS_MAX_NUMBER else None
+
+
+def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
+    """Build an UPDATE that records a task's latest reported progress.
+
+    UPDATE never creates a record, so progress for a task Celery Insights has not seen is dropped
+    instead of failing the batch on the schema's required task fields.
+    """
+    task_id = event.get("uuid")
+    timestamp = event.get("timestamp")
+    current = _progress_number(event.get("current"))
+    # An unusable total (zero, negative, not a number) drops only the total, not the report.
+    total = _progress_number(event.get("total")) or None
+
+    if not task_id or not timestamp or current is None:
+        return "", {}
+
+    p = f"pg{idx}"
+    params: dict = {f"{p}_id": task_id, f"{p}_ts": _epoch_to_iso(timestamp), f"{p}_current": current}
+    fields = [f"current: ${p}_current", f"updated_at: <datetime>${p}_ts"]
+    if total is not None:
+        params[f"{p}_total"] = total
+        fields.append(f"total: ${p}_total")
+    description = event.get("description")
+    if description is not None:
+        params[f"{p}_description"] = str(description)[:PROGRESS_DESCRIPTION_MAX_LENGTH]
+        fields.append(f"description: ${p}_description")
+
+    attempt = event.get("attempt")
+    if isinstance(attempt, int) and not isinstance(attempt, bool) and 0 <= attempt <= PROGRESS_MAX_NUMBER:
+        # The attempt (the task's retry count) orders reports across workers whose clocks
+        # disagree: a later attempt always wins, time only orders reports within one attempt,
+        # and a report from an attempt before the task's current retries is ignored.
+        params[f"{p}_attempt"] = attempt
+        fields.append(f"attempt: ${p}_attempt")
+        accept = (
+            f"${p}_attempt >= (retries ?? 0) AND (progress.attempt IS NONE"
+            f" OR ${p}_attempt > progress.attempt"
+            f" OR (${p}_attempt = progress.attempt AND <datetime>${p}_ts >= progress.updated_at))"
+        )
+    else:
+        # Without an attempt, worker timestamps decide, which assumes the workers' clocks agree.
+        # A tagged report is never replaced by an untagged one, so the outcome doesn't depend
+        # on which of the two arrives first.
+        accept = (
+            f"progress.attempt IS NONE"
+            f" AND (progress.updated_at IS NONE OR <datetime>${p}_ts >= progress.updated_at)"
+            f" AND (last_started_at IS NONE OR <datetime>${p}_ts >= last_started_at)"
+        )
+
+    query = (
+        f"UPDATE type::record('task', ${p}_id) SET progress = "
+        f"IF {accept} THEN {{ {', '.join(fields)} }} ELSE progress END"
+    )
     return query, params
 
 

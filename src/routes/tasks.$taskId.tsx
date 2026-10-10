@@ -6,6 +6,7 @@ import TaskAlerts from "@components/task/alerts/task-alerts"
 import TaskAvatar from "@components/task/task-avatar"
 import TaskLifetimeChart from "@components/task/task-lifetime-chart"
 import TaskPageHeader from "@components/task/task-page-header"
+import TaskProgress, { progressLabel } from "@components/task/task-progress"
 import { Skeleton } from "@components/ui/skeleton"
 import { useTaskWorkflow } from "@hooks/use-task-workflow"
 import { useNow } from "@hooks/use-now"
@@ -68,6 +69,15 @@ const ExecutionPanel = ({ task }: { task: Task }) => {
         <DetailItem label="Received" value={formatDateTime(task.received_at)} />
         <DetailItem label="Started" value={formatDateTime(task.started_at)} />
         <DetailItem label="Finished" value={formatDateTime(task.succeeded_at || task.failed_at || task.retried_at)} />
+        {task.progress && (
+          <div className="md:col-span-2">
+            <DetailItem
+              label={progressLabel(task.state)}
+              value={<TaskProgress progress={task.progress} />}
+              description={`Last reported ${task.progress.updated_at.toLocaleString()}`}
+            />
+          </div>
+        )}
       </div>
     </Panel>
   )

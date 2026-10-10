@@ -87,8 +87,11 @@ def _build_task_meta_upsert(task_id: str, meta: dict, *, search_indexing_enabled
         # Metadata without result_extended lacks these fields, so keep what task events stored.
         *(
             f"{field} = ${field} ?? $meta_previous.{field}"
-            for field in ("type", "args", "kwargs", "worker", "retries", "routing_key")
+            for field in ("type", "args", "kwargs", "worker", "routing_key")
         ),
+        # Retries only go up; metadata from a failed attempt must not lower the count events raised.
+        "retries = IF $retries = NONE THEN $meta_previous.retries"
+        " ELSE math::max([$meta_previous.retries ?? 0, $retries]) END",
         "kwargs_search_source = IF $kwargs != NONE THEN 'repr' ELSE $meta_previous.kwargs_search_source END",
         "workflow_id = $meta_previous.workflow_id ?? $workflow_id",
         "last_updated = <datetime>$last_updated",
