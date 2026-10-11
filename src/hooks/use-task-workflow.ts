@@ -1,3 +1,4 @@
+import { queryObservation, isObservationRefresh } from "@lib/observation-query"
 import { useSurrealDB } from "@components/surrealdb-provider"
 import { extractId, type SurrealTask, type SurrealTaskProgress, type SurrealWorkflow } from "@/types/surreal-records"
 import type { LiveSubscription, Uuid } from "surrealdb"
@@ -13,6 +14,9 @@ interface UseTaskWorkflowResult extends TaskWorkflowSnapshot {
   error: Error | null
   isLoading: boolean
 }
+
+// One observation refresh notifies every STARTED member at once; read the workflow once per burst.
+const REFRESH_COALESCE_MS = 250
 
 const EMPTY_RESULT: TaskWorkflowSnapshot = {
   task: null,
@@ -118,13 +122,15 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
     }
 
     try {
-      const results = await db.query<
+      const results = await queryObservation<
         Array<null | {
           members?: SurrealTask[]
           task?: SurrealTask | null
           workflow?: SurrealWorkflow | null
         }>
       >(
+        db,
+        { operation: "task-workflow", taskId },
         `LET $task = (SELECT * FROM type::record('task', $taskId))[0];
                  LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId;
                  RETURN {
@@ -158,6 +164,7 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
 
     let cancelled = false
     let unsubscribe: (() => void) | undefined
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined
 
     const start = async () => {
       setIsLoading(true)
@@ -168,6 +175,10 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
       const subscription = await db.liveOf(liveId)
       subscriptionRef.current = subscription
       unsubscribe = subscription.subscribe((message) => {
+        if (isObservationRefresh(message.value)) {
+          void fetchSnapshot()
+          return
+        }
         const record = message.value as unknown as SurrealTask
         const recordId = extractId(record.id)
         const workflowId = workflowIdRef.current
@@ -177,8 +188,11 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
           if (patched) {
             snapshotRef.current = patched
             setData(patched)
-          } else {
-            void fetchSnapshot()
+          } else if (!refreshTimer) {
+            refreshTimer = setTimeout(() => {
+              refreshTimer = undefined
+              void fetchSnapshot()
+            }, REFRESH_COALESCE_MS)
           }
         }
       })
@@ -191,6 +205,7 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
 
     return () => {
       cancelled = true
+      clearTimeout(refreshTimer)
       unsubscribe?.()
       if (subscriptionRef.current) {
         subscriptionRef.current.kill().catch(() => {})
