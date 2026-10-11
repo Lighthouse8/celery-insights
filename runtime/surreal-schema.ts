@@ -1,3 +1,4 @@
+import { databaseReaderPassword } from "./database-config"
 import { Surreal } from "surrealdb"
 import type { Config } from "./config"
 import type { Logger } from "./logger"
@@ -141,24 +142,6 @@ DEFINE FIELD OVERWRITE holder ON ingestion_lock TYPE option<string>;
 DEFINE FIELD OVERWRITE acquired_at ON ingestion_lock TYPE datetime;
 DEFINE FIELD OVERWRITE heartbeat ON ingestion_lock TYPE datetime;
 DEFINE FIELD OVERWRITE ttl_seconds ON ingestion_lock TYPE int DEFAULT 30;
-`
-
-/**
- * Frontend authentication schema — viewer table and record access method.
- * Only applied when SURREALDB_FRONTEND_PASS is configured.
- */
-export const FRONTEND_AUTH_SCHEMA = `
-DEFINE TABLE IF NOT EXISTS viewer SCHEMAFULL
-  PERMISSIONS NONE;
-
-DEFINE FIELD OVERWRITE name ON viewer TYPE string;
-DEFINE FIELD OVERWRITE pass ON viewer TYPE string;
-
-DEFINE ACCESS OVERWRITE frontend ON DATABASE TYPE RECORD
-  SIGNUP NONE
-  SIGNIN (
-    SELECT * FROM viewer WHERE name = $name AND crypto::argon2::compare(pass, $pass)
-  );
 `
 
 interface BackfillTaskRecord {
@@ -343,6 +326,8 @@ export async function runSchemaMigration(config: Config, logger?: Logger): Promi
   const ns = assertIdent(config.surrealdbNamespace, "namespace")
   const dbName = assertIdent(config.surrealdbDatabase, "database")
 
+  const rootPassword = config.surrealdbRootPass
+  if (!rootPassword) throw new Error("Database root password is required")
   const db = new Surreal()
 
   try {
@@ -350,7 +335,7 @@ export async function runSchemaMigration(config: Config, logger?: Logger): Promi
     await db.connect(config.surrealdbUrl, {
       authentication: {
         username: "root",
-        password: "root",
+        password: rootPassword,
       },
     })
 
@@ -388,26 +373,18 @@ export async function runSchemaMigration(config: Config, logger?: Logger): Promi
       .collect()
     await backfillWorkflows(db, log)
 
-    // Always create a read-only viewer user for the frontend.
-    // SurrealDB requires authentication even for tables with FULL select permissions —
-    // anonymous (unauthenticated) connections cannot query anything.
-    await db.query(`DEFINE USER OVERWRITE viewer ON DATABASE PASSWORD 'viewer' ROLES VIEWER`).collect()
+    // Server-only read connection; no fixed browser credential remains.
+    await db
+      .query(
+        `DEFINE USER OVERWRITE observation_reader ON DATABASE PASSWORD ${toSurrealStrand(databaseReaderPassword(config))} ROLES VIEWER`,
+      )
+      .collect()
+    await db.query(`REMOVE USER IF EXISTS viewer ON DATABASE`).collect()
 
-    // Conditional frontend auth setup (password-protected access)
-    if (config.surrealdbFrontendPass) {
-      await db.query(FRONTEND_AUTH_SCHEMA).collect()
-      await db
-        .query(`UPSERT viewer:frontend SET name = 'frontend', pass = crypto::argon2::generate($pass)`, {
-          pass: config.surrealdbFrontendPass,
-        })
-        .collect()
-      log.info("Schema migration completed (frontend auth enabled)")
-    } else {
-      // Clean up frontend auth if previously configured
-      await db.query(`REMOVE ACCESS IF EXISTS frontend ON DATABASE`).collect()
-      await db.query(`REMOVE TABLE IF EXISTS viewer`).collect()
-      log.info("Schema migration completed (anonymous access via viewer user)")
-    }
+    // Retire the old database-level application login records.
+    await db.query(`REMOVE ACCESS IF EXISTS frontend ON DATABASE`).collect()
+    await db.query(`REMOVE TABLE IF EXISTS viewer`).collect()
+    log.info("Schema migration completed (Bun-owned observation reads)")
   } finally {
     await db.close()
   }

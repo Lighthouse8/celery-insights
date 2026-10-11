@@ -25,6 +25,8 @@ export interface SurrealTaskProgress {
 
 /** Task record as stored in SurrealDB */
 export interface SurrealTask {
+  relationships_restricted?: boolean
+  restricted_fields?: string[]
   id: unknown // SurrealDB RecordId — use String(id) for comparison
   type?: string | null
   state: string
@@ -79,6 +81,7 @@ export interface SurrealWorkflow {
 
 /** Worker record as stored in SurrealDB */
 export interface SurrealWorker {
+  restricted_fields?: string[]
   id: unknown
   hostname?: string
   pid?: number
@@ -217,6 +220,8 @@ export interface TaskProgress {
 
 /** Parsed task — same shape as SurrealTask but with extracted id and Date timestamps */
 export interface Task {
+  relationships_restricted?: boolean
+  restricted_fields?: string[]
   id: string
   type?: string
   state: TaskState
@@ -270,7 +275,9 @@ export interface Workflow {
 
 /** Convert a raw SurrealDB task record to a parsed Task with Date objects */
 export const parseTask = (raw: SurrealTask): Task => ({
+  relationships_restricted: raw.relationships_restricted,
   id: extractId(raw.id),
+  restricted_fields: raw.restricted_fields,
   type: raw.type || undefined,
   state: (raw.state as TaskState) || TaskState.PENDING,
   sent_at: isoToDate(raw.sent_at) || isoToDate(raw.last_updated) || new Date(0),
