@@ -54,7 +54,7 @@ try {
   await root.use({ namespace: "test", database: "observation" })
   await root.query(CORE_SCHEMA)
   await root.query(
-    "CREATE task:sample SET type = 'sample', state = 'SUCCESS', execution_observed_at = time::now(), execution_active_at = time::now(), workflow_id = 'sample', runtime = 0.2, last_updated = time::now(), result = 'private-result', kwargs = '{\"channel\":\"north team\"}', last_started_at = time::now(), progress = { current: 1, total: 2, updated_at: time::now() }; CREATE event:sample SET task_id = 'sample', event_type = 'task-succeeded', timestamp = time::now(); CREATE worker:sample SET status = 'online', last_updated = time::now(); CREATE workflow:sample SET root_task_id = 'sample', aggregate_state = 'SUCCESS', task_count = 1, last_updated = time::now(); RELATE workflow:sample->workflow_task:sample->task:sample;",
+    "CREATE task:sample SET type = 'sample', state = 'SUCCESS', execution_observed_at = time::now(), execution_active_at = time::now(), workflow_id = 'sample', runtime = 0.2, last_updated = time::now(), result = 'private-result', kwargs = '{\"channel\":\"north team\"}', last_started_at = time::now(), progress = { current: 1, total: 2, description: 'private-progress', updated_at: time::now() }; CREATE event:sample SET task_id = 'sample', event_type = 'task-succeeded', timestamp = time::now(); CREATE worker:sample SET status = 'online', last_updated = time::now(); CREATE workflow:sample SET root_task_id = 'sample', aggregate_state = 'SUCCESS', task_count = 1, last_updated = time::now(); RELATE workflow:sample->workflow_task:sample->task:sample;",
   )
   const api = new ObservationApi(root, validateConfig({}), async () => ({
     python_version: "fixture",
@@ -193,15 +193,21 @@ try {
   assert.ok(visible[0].execution_active_at)
   assert.ok(visible[0].last_started_at)
   assert.equal((visible[0].progress as { current: number }).current, 1)
+  assert.equal((visible[0].progress as { description?: string }).description, undefined)
   const [unrestricted] = await scopedDatabase(root, { deny_fields: [] }).query<[Array<Record<string, unknown>>]>(
     "SELECT * FROM type::record('task', $taskId)",
     { taskId: "sample" },
   )
   assert.equal(unrestricted[0].relationships_restricted, undefined)
+  assert.equal((unrestricted[0].progress as { description?: string }).description, "private-progress")
   const [payloadOnly] = await scopedDatabase(root, { deny_fields: ["task.result.read"] }).query<
     [Array<Record<string, unknown>>]
   >("SELECT * FROM type::record('task', $taskId)", { taskId: "sample" })
   assert.equal(payloadOnly[0].relationships_restricted, false)
+  const [withoutProgress] = await scopedDatabase(root, { deny_fields: ["task.result.read"] }).query<
+    [Array<Record<string, unknown>>]
+  >("SELECT * FROM type::record('task', $taskId)", { taskId: "hidden" })
+  assert.equal(withoutProgress[0].progress, undefined)
   const [hidden] = await scoped.query<[unknown[]]>("SELECT * FROM type::record('task', $taskId)", { taskId: "hidden" })
   assert.deepEqual(hidden, [])
   const [counts, events, workflows, search] = await scoped.query<[unknown[], unknown[], unknown[], unknown[]]>(

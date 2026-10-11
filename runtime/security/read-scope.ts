@@ -79,9 +79,13 @@ export function scopedDatabase(db: Pick<Surreal, "query">, scope: ReadScope): Pi
   }
   const taskWhere = taskConditions.length ? taskConditions.join(" AND ") : "true"
   const taskMetadata =
-    "id,type,state,sent_at,received_at,started_at,last_started_at,execution_active,execution_observed_at,execution_active_at,succeeded_at,failed_at,retried_at,revoked_at,rejected_at,runtime,last_updated,last_updated_observed,first_observed_at,had_error,eta,expires,retries,exchange,routing_key,worker,progress"
+    "id,type,state,sent_at,received_at,started_at,last_started_at,execution_active,execution_observed_at,execution_active_at,succeeded_at,failed_at,retried_at,revoked_at,rejected_at,runtime,last_updated,last_updated_observed,first_observed_at,had_error,eta,expires,retries,exchange,routing_key,worker"
   const taskFields = [
     taskMetadata,
+    // Progress counts are metadata; the description is text the task wrote, so it follows result access.
+    denied.has("task.result.read")
+      ? "IF progress THEN { current: progress.current, total: progress.total, attempt: progress.attempt, updated_at: progress.updated_at } ELSE NONE END AS progress"
+      : "progress",
     `${JSON.stringify(scope.deny_fields)} AS restricted_fields`,
     `${taskScoped(scope)} AS relationships_restricted`,
     ...(!taskScoped(scope) ? ["root_id,parent_id,workflow_id,children"] : ["[] AS children"]),
