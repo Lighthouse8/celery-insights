@@ -290,7 +290,7 @@ describe("getLayoutKey", () => {
   it("changes when a member's joined runs change or a joined run loads, not when one changes state", () => {
     const joining = { ...child, joined_tasks: ["elsewhere"] }
     const elsewhere = createTask({ id: "elsewhere", workflow_id: "other", state: TaskState.STARTED })
-    const chosen = { ids: ["elsewhere"], total: 1, tasks: [elsewhere], cut: 0 }
+    const chosen = { ids: ["elsewhere"], total: 1, tasks: [elsewhere], walked: ["elsewhere"], cut: 0 }
     const base = getLayoutKey([root, joining], "root", chosen)
 
     expect(getLayoutKey([root, { ...joining, joined_tasks: ["elsewhere", "more"] }], "root", chosen)).not.toBe(base)
@@ -303,7 +303,7 @@ describe("getLayoutKey", () => {
   })
 
   it("changes when the read chooses other joined runs or leaves out a different number", () => {
-    const chosen = { ids: ["a", "b"], total: 2, tasks: [], cut: 0 }
+    const chosen = { ids: ["a", "b"], total: 2, tasks: [], walked: ["a", "b"], cut: 0 }
     const base = getLayoutKey([root], "root", chosen)
 
     expect(getLayoutKey([root], "root", { ...chosen, ids: ["a", "c"] })).not.toBe(base)
@@ -314,7 +314,7 @@ describe("getLayoutKey", () => {
   it("changes when an expanded joined run's structure changes, not when one of its tasks changes state", () => {
     const run = createTask({ id: "run", workflow_id: "other", children: ["step"] })
     const step = createTask({ id: "step", workflow_id: "other", parent_id: "run", state: TaskState.STARTED })
-    const expanded = { ids: ["run"], total: 1, tasks: [run, step], cut: 0 }
+    const expanded = { ids: ["run"], total: 1, tasks: [run, step], walked: ["run", "step"], cut: 0 }
     const base = getLayoutKey([root], "root", expanded)
 
     expect(getLayoutKey([root], "root", { ...expanded, tasks: [run, { ...step, state: TaskState.SUCCESS }] })).toBe(
@@ -352,6 +352,7 @@ describe("refreshNodeData", () => {
       ids: ["elsewhere", "missing"],
       total: 2,
       tasks: [elsewhere],
+      walked: ["elsewhere", "missing"],
       cut: 0,
     })
     const finished = { ...elsewhere, state: TaskState.SUCCESS }
@@ -376,6 +377,7 @@ describe("refreshNodeData", () => {
       ids: ["run-1"],
       total: 1,
       tasks: [run],
+      walked: ["run-1"],
       cut: 0,
     })
     const finished = { ...run, state: TaskState.SUCCESS }
@@ -396,7 +398,7 @@ describe("refreshNodeData expanded runs", () => {
       state: TaskState.STARTED,
       progress: { current: 2, total: 10, updated_at: new Date() },
     })
-    const joinedRuns = { ids: ["resource"], total: 1, tasks: [resource], cut: 0 }
+    const joinedRuns = { ids: ["resource"], total: 1, tasks: [resource], walked: ["resource"], cut: 0 }
     const { nodes } = getFlowGraph([root], "root", undefined, joinedRuns)
     const advanced = { ...resource, progress: { current: 7, total: 10, updated_at: new Date() } }
 
@@ -413,7 +415,13 @@ describe("refreshNodeData expanded runs", () => {
     const root = createTask({ id: "root", joined_tasks: ["run"] })
     const run = createTask({ id: "run", workflow_id: "other", children: ["step"] })
     const step = createTask({ id: "step", workflow_id: "other", parent_id: "run", state: TaskState.STARTED })
-    const { nodes } = getFlowGraph([root], "root", undefined, { ids: ["run"], total: 1, tasks: [run, step], cut: 0 })
+    const { nodes } = getFlowGraph([root], "root", undefined, {
+      ids: ["run"],
+      total: 1,
+      tasks: [run, step],
+      walked: ["run", "step"],
+      cut: 0,
+    })
     const finished = { ...step, state: TaskState.SUCCESS }
 
     const refreshed = refreshNodeData(nodes, [root], [run, finished])
@@ -434,7 +442,7 @@ describe("getFlowGraph joined runs", () => {
   const root = createTask({ id: "root", joined_tasks: ["elsewhere", "missing"] })
   const child = createTask({ id: "child", parent_id: "root", joined_tasks: ["elsewhere", "root"] })
   const elsewhere = createTask({ id: "elsewhere", workflow_id: "other" })
-  const chosen = { ids: ["elsewhere", "missing"], total: 2, tasks: [elsewhere], cut: 0 }
+  const chosen = { ids: ["elsewhere", "missing"], total: 2, tasks: [elsewhere], walked: [], cut: 0 }
 
   it("draws joined runs as dashed extra nodes outside the workflow tree", () => {
     const { nodes, edges } = getFlowGraph([root, child], "root", undefined, chosen)
@@ -477,6 +485,7 @@ describe("getFlowGraph joined runs", () => {
     const { nodes, edges, hiddenJoinedRuns } = getFlowGraph(tasks, "root", undefined, {
       ids: ["a-run", ...bIds.slice(0, -1)],
       total: MAX_JOINED_RUNS + 1,
+      walked: [],
       cut: 0,
       tasks: [aRun],
     })
@@ -500,6 +509,7 @@ describe("getFlowGraph joined runs", () => {
     const { nodes, edges, hiddenJoinedRuns, hiddenJoinLinks } = getFlowGraph(tasks, "root", undefined, {
       ids: ["shared"],
       total: 1,
+      walked: [],
       cut: 0,
       tasks: [],
     })
@@ -524,7 +534,13 @@ describe("getFlowGraph joined runs", () => {
       createTask({ id: "joined:joined:run-1", parent_id: "root" }),
     ]
 
-    const { nodes, edges } = getFlowGraph(tasks, "root", undefined, { ids: ["run-1"], total: 1, tasks: [], cut: 0 })
+    const { nodes, edges } = getFlowGraph(tasks, "root", undefined, {
+      ids: ["run-1"],
+      total: 1,
+      tasks: [],
+      walked: [],
+      cut: 0,
+    })
 
     const ids = nodes.map((node) => node.id)
     expect(new Set(ids).size).toBe(ids.length)
@@ -560,7 +576,7 @@ describe("getFlowGraph joined runs", () => {
       id: "metrics",
       workflow_id: "nightly",
       parent_id: "hierarchy",
-      joined_tasks: ["nested", "root", "gone"],
+      joined_tasks: ["nested", "root", "gone", "cut-run"],
     })
     const nested = createTask({ id: "nested", workflow_id: "nested", children: ["nested-child"] })
     const nestedChild = createTask({ id: "nested-child", workflow_id: "nested", parent_id: "nested" })
@@ -568,6 +584,8 @@ describe("getFlowGraph joined runs", () => {
       ids: ["resource"],
       total: 1,
       tasks: [resource, hierarchy, finalize, fail, metrics, nested, nestedChild],
+      // "gone" was walked but has no record; "cut-run" was never walked (cut by the bounds).
+      walked: ["resource", "hierarchy", "finalize", "fail", "metrics", "nested", "nested-child", "gone"],
       cut: 0,
     }
     const graph = getFlowGraph([member, memberChild], "root", undefined, expanded)
@@ -603,8 +621,31 @@ describe("getFlowGraph joined runs", () => {
       expect(node("joined:nested")).toMatchObject({ type: "joinedRunNode", data: nested })
       expect(node("joined:nested-child")).toMatchObject({ type: "taskNode", data: nestedChild })
       expect(solid).toContainEqual(["joined:nested", "joined:nested-child"])
-      // A run the read couldn't load stays a placeholder.
+      // A run the walk reached but couldn't load stays a placeholder; one it never reached isn't drawn.
       expect(node("joined:gone")).toMatchObject({ type: "joinedTaskNode", data: { taskId: "gone" } })
+      expect(node("joined:cut-run")).toBeUndefined()
+    })
+
+    it("keeps the joined-run look on a joined run another expansion reaches first as a child", () => {
+      const joiner = createTask({ id: "root", joined_tasks: ["a", "b"] })
+      const a = createTask({ id: "a", workflow_id: "other", children: ["b"] })
+      const b = createTask({ id: "b", workflow_id: "other", parent_id: "a" })
+      const both = getFlowGraph([joiner], "root", undefined, {
+        ids: ["a", "b"],
+        total: 2,
+        tasks: [a, b],
+        walked: ["a", "b"],
+        cut: 0,
+      })
+      const bNode = both.nodes.find((candidate) => candidate.id === "joined:b")
+
+      expect(bNode).toMatchObject({ type: "joinedRunNode", data: b })
+      expect(both.edges.map((edge) => [edge.source, edge.target])).toEqual(
+        expect.arrayContaining([
+          ["joined:a", "joined:b"],
+          ["root", "joined:b"],
+        ]),
+      )
     })
 
     it("leaves the workflow members where they were", () => {

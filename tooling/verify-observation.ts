@@ -4,6 +4,7 @@ import { initializeAuthentication } from "../runtime/security/http"
 import { scopedDatabase, intersectScopes } from "../runtime/security/read-scope"
 import { SearchIndexes } from "../runtime/search-indexes"
 import { buildRead, operations } from "../runtime/observation/queries"
+import { parseTask, type SurrealTask } from "../src/types/surreal-records"
 import { MAX_EXPANDED_TASKS, MAX_EXPANSION_DEPTH, MAX_JOINED_RUNS } from "../src/lib/joined-runs"
 import assert from "node:assert/strict"
 import { createServer } from "node:net"
@@ -273,6 +274,7 @@ try {
     expanded: Array<Record<string, unknown>>
     expansionCut: number
     joinedIds: string[]
+    walkedIds: string[]
     joinedTotal: number
   }
   const workflowRead = buildRead({ operation: "task-workflow", taskId: "sample" })
@@ -288,13 +290,12 @@ try {
     ["task:hidden"],
     "unknown joined runs are omitted",
   )
-  assert.equal(allJoined[0].result, "hidden-result")
+  assert.equal(allJoined[0].state, "SUCCESS")
   const payloadJoined = await joinedRuns(scopedDatabase(root, { deny_fields: ["task.result.read"] }))
   assert.deepEqual(
     payloadJoined.map((task) => String(task.id)),
     ["task:hidden"],
   )
-  assert.equal(payloadJoined[0].result, undefined)
   assert.deepEqual(await joinedRuns(scoped), [], "task scopes hide joined runs like other relationships")
   assert.deepEqual((await readWorkflow(scoped)).joinedIds, [])
   const ghosted = await readWorkflow(root)
@@ -338,6 +339,10 @@ try {
     CREATE task:nested_child SET state = 'SUCCESS', workflow_id = 'nested', parent_id = 'nested_run', last_updated = time::now();
     UPDATE task:sample SET joined_tasks = ['resource'];`,
   )
+  // Expanded task nodes show progress: the read keeps it and the retries parseTask checks its attempt against.
+  await root.query(
+    "UPDATE task:hierarchy SET state = 'STARTED', retries = 1, progress = { current: 3, total: 10, attempt: 1, updated_at: time::now() }",
+  )
   const expandedIds = (read: WorkflowRead) => read.expanded.map((task) => String(task.id)).sort()
   const subtree = await readWorkflow(root)
   assert.deepEqual(subtree.joinedIds, ["resource"])
@@ -351,17 +356,38 @@ try {
     "task:resource",
   ])
   assert.equal(subtree.expansionCut, 0)
+  const hierarchy = subtree.expanded.find((task) => String(task.id) === "task:hierarchy")
+  assert.deepEqual(parseTask(hierarchy as unknown as SurrealTask).progress?.current, 3)
+  // The walk reports every id it reached, including ones with no row yet, so a later row refreshes the view.
+  await root.query("UPDATE task:fail SET children = ['fail_retry']")
+  assert((await readWorkflow(root)).walkedIds.includes("fail_retry"))
   const restrictedSubtree = await readWorkflow(scopedDatabase(root, { deny_fields: ["task.result.read"] }))
   assert.deepEqual(expandedIds(restrictedSubtree), expandedIds(subtree))
-  const restrictedResource = restrictedSubtree.expanded.find((task) => String(task.id) === "task:resource")
-  assert.equal(restrictedResource?.result, undefined)
-  assert.deepEqual(restrictedResource?.restricted_fields, ["task.result.read"])
   const rowScopedSubtree = await readWorkflow(
     scopedDatabase(root, { task_ids: ["sample", "resource"], deny_fields: [] }),
   )
   assert.deepEqual([rowScopedSubtree.joinedIds, rowScopedSubtree.expanded], [[], []])
   await root.query("DELETE task WHERE workflow_id IN ['nightly', 'nested']")
-  // Bounds: at most MAX_EXPANDED_TASKS reads, MAX_EXPANSION_DEPTH levels below a run; the rest counts as cut.
+  // Expanded tasks carry only what their nodes need, never payloads: 200 tasks with 100 KiB results would
+  // otherwise make a 20 MiB response, over the 16 MiB observation limit.
+  await root.query(
+    `CREATE task:heavy SET state = 'SUCCESS', workflow_id = 'heavy', children = $heavyChildren, result = $payload, last_updated = time::now();
+    FOR $child IN $heavyChildren { CREATE type::record('task', $child) SET state = 'SUCCESS', workflow_id = $child, parent_id = 'heavy', result = $payload, args = $payload, last_updated = time::now(); };
+    UPDATE task:sample SET joined_tasks = ['heavy'];`,
+    {
+      heavyChildren: Array.from({ length: 200 }, (_, index) => `heavy_${index}`),
+      payload: "x".repeat(100 * 1024),
+    },
+  )
+  const heavy = await readWorkflow(root)
+  assert.equal(heavy.expanded.length, 201)
+  for (const task of heavy.expanded)
+    for (const field of ["result", "args", "kwargs", "exception", "traceback"])
+      assert.equal(task[field], undefined, `${field} is not read for an expanded task`)
+  assert(JSON.stringify(heavy).length < 1024 * 1024, "expanded runs stay far below the response limit")
+  await root.query("DELETE task WHERE string::starts_with(workflow_id, 'heavy')")
+  // Bounds: at most MAX_EXPANDED_TASKS reads, MAX_EXPANSION_DEPTH levels below the runs the workflow joined; the
+  // rest counts as cut.
   // (The wide children get their own workflow ids: SurrealDB 3.3.0 inserts thousands of equal index values slowly.)
   await root.query(
     `CREATE task:wide SET state = 'STARTED', workflow_id = 'wide', children = $wideChildren, last_updated = time::now();
@@ -375,7 +401,7 @@ try {
   assert.equal(wide.expansionCut, 101, "the root and the first wide children fit; the other 101 are cut")
   await root.query("UPDATE task:sample SET joined_tasks = ['deep_0']")
   const deep = await readWorkflow(root)
-  assert.equal(deep.expanded.length, MAX_EXPANSION_DEPTH + 1, "a run's root and MAX_EXPANSION_DEPTH levels below it")
+  assert.equal(deep.expanded.length, MAX_EXPANSION_DEPTH + 1, "the joined run and MAX_EXPANSION_DEPTH levels below it")
   assert.equal(deep.expansionCut, 1)
   await root.query("DELETE task WHERE workflow_id = 'deep' OR string::starts_with(workflow_id, 'wide')")
   await root.query("UPDATE task:sample SET joined_tasks = NONE")

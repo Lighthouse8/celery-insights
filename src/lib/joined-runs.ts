@@ -4,25 +4,35 @@ import type { Task } from "@/types/surreal-records"
 export const MAX_JOINED_RUNS = 100
 /** Tasks of joined runs (their roots and expanded descendants) one workflow view reads. */
 export const MAX_EXPANDED_TASKS = 2000
-/** Levels below a joined run's root the read walks. */
+/** Levels the read walks below the runs the workflow joined; runs joined further down share the count. */
 export const MAX_EXPANSION_DEPTH = 20
 
 /**
  * The joined runs the task-workflow read chose for a workflow: `ids` (first MAX_JOINED_RUNS non-member ids in id
  * order, loadable or not), `total` (all of them, before the cap), `tasks` (the records it loaded: those runs and
- * their expanded descendants, including runs those joined), and `cut` (links it left unexpanded by its bounds).
+ * their expanded descendants, including runs those joined), `walked`, and `cut` (links it left unexpanded by its
+ * bounds).
  */
 export interface JoinedRuns {
   ids: string[]
   total: number
   tasks: Task[]
+  /** Every id the read's walk reached: the chosen runs and every child or joined run it tried to read. */
+  walked: string[]
   cut: number
 }
 
-export const NO_JOINED_RUNS: JoinedRuns = { ids: [], total: 0, tasks: [], cut: 0 }
+export const NO_JOINED_RUNS: JoinedRuns = { ids: [], total: 0, tasks: [], walked: [], cut: 0 }
+
+/**
+ * What an expanded task's node and the walk need. Never payloads: up to MAX_EXPANDED_TASKS full records could
+ * exceed the observation response limit.
+ */
+export const EXPANDED_TASK_FIELDS =
+  "id,type,state,workflow_id,root_id,parent_id,children,joined_tasks,last_updated,execution_active,execution_observed_at,retries,progress"
 
 const lookup = (ids: string) =>
-  `array::filter(array::map(${ids},|$id| (SELECT * FROM type::record('task',$id) TIMEOUT 2s)[0]),|$found| $found != NONE)`
+  `array::filter(array::map(${ids},|$id| (SELECT ${EXPANDED_TASK_FIELDS} FROM type::record('task',$id) TIMEOUT 2s)[0]),|$found| $found != NONE)`
 const linksOf = (records: string, seen: string) =>
   `array::sort(array::complement(array::distinct(array::filter(array::flatten(array::concat(${records}.children,${records}.joined_tasks)),|$id| $id != NONE)),array::concat(${seen},$links.task_id)))`
 
@@ -56,6 +66,6 @@ export const joinedRunsQuery = (): { statements: string[]; fields: string } => {
   const found = Array.from({ length: last + 1 }, (_, level) => `$found${level}`).join(",")
   return {
     statements,
-    fields: `joinedIds:$seen0,joinedTotal:array::len($joinedCandidates),expanded:array::concat(${found}),expansionCut:array::len(array::distinct(array::concat(${cut.join(",")},$beyond)))`,
+    fields: `joinedIds:$seen0,walkedIds:$seen${last},joinedTotal:array::len($joinedCandidates),expanded:array::concat(${found}),expansionCut:array::len(array::distinct(array::concat(${cut.join(",")},$beyond)))`,
   }
 }

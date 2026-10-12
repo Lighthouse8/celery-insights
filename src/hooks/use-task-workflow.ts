@@ -11,6 +11,8 @@ interface TaskWorkflowSnapshot {
   expanded: SurrealTask[]
   /** The joined run ids the read chose, whether or not their records loaded. */
   joinedIds: string[]
+  /** Every task id the read's walk reached, loaded or not: the chosen runs and what it expanded. */
+  walkedIds: string[]
   /** Every joined run id, before the MAX_JOINED_RUNS cap. */
   joinedTotal: number
   /** Links out of the expanded tasks the read's bounds left unexpanded. */
@@ -35,6 +37,7 @@ const EMPTY_RESULT: TaskWorkflowSnapshot = {
   members: [],
   expanded: [],
   joinedIds: [],
+  walkedIds: [],
   joinedTotal: 0,
   expansionCut: 0,
 }
@@ -64,6 +67,7 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
           members?: SurrealTask[]
           expanded?: SurrealTask[]
           joinedIds?: string[]
+          walkedIds?: string[]
           joinedTotal?: number
           expansionCut?: number
           task?: SurrealTask | null
@@ -90,13 +94,14 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         members: Array.isArray(result?.members) ? result.members : [],
         expanded: Array.isArray(result?.expanded) ? result.expanded : [],
         joinedIds: Array.isArray(result?.joinedIds) ? result.joinedIds : [],
+        walkedIds: Array.isArray(result?.walkedIds) ? result.walkedIds : [],
         joinedTotal: result?.joinedTotal ?? 0,
         expansionCut: result?.expansionCut ?? 0,
       }
       workflowIdRef.current = next.task?.workflow_id || next.task?.root_id || next.task?.id?.toString() || taskId
-      // The ids the read chose, not only the records it found: a run with no row yet must refresh when it gets one.
-      // Any expanded task's change refreshes too, as its node shows its state and progress.
-      joinedIdsRef.current = new Set([...next.joinedIds, ...next.expanded.map((task) => extractId(task.id))])
+      // Every id the walk reached, not only the records it found: a run or task with no row yet must refresh when it
+      // gets one, and any expanded task's change refreshes too, as its node shows its state and progress.
+      joinedIdsRef.current = new Set(next.walkedIds)
       setData(next)
       setError(null)
     } catch (err) {
