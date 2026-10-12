@@ -255,6 +255,12 @@ describe("getFlowGraph", () => {
   })
 })
 
+const isJoinedRoot = (node: { type?: string }) => node.type === "joinedRunNode" || node.type === "joinedTaskNode"
+const joinedRunId = (node: { data: unknown }) => {
+  const data = node.data as { id?: string; taskId?: string }
+  return data.taskId ?? data.id
+}
+
 describe("getFlowGraph joined runs", () => {
   const root = createTask({ id: "root", joined_tasks: ["elsewhere", "missing"] })
   const child = createTask({ id: "child", parent_id: "root", joined_tasks: ["elsewhere", "root"] })
@@ -264,11 +270,12 @@ describe("getFlowGraph joined runs", () => {
   it("draws joined runs as dashed extra nodes outside the workflow tree", () => {
     const { nodes, edges } = getFlowGraph([root, child], "root", undefined, chosen)
 
-    const joinedNodes = nodes.filter((node) => node.type === "joinedTaskNode")
+    const joinedNodes = nodes.filter(isJoinedRoot)
     expect(joinedNodes.map((node) => node.id)).toEqual(["joined:elsewhere", "joined:missing"])
-    expect(joinedNodes[0].data).toEqual({ taskId: "elsewhere", task: elsewhere })
+    // A loaded run is an ordinary task node with the joined-run look.
+    expect(joinedNodes[0]).toMatchObject({ type: "joinedRunNode", data: elsewhere })
     // A run that can't be loaded stays as a placeholder with only its id.
-    expect(joinedNodes[1].data).toEqual({ taskId: "missing", task: undefined })
+    expect(joinedNodes[1]).toMatchObject({ type: "joinedTaskNode", data: { taskId: "missing" } })
     expect(nodes.filter((node) => node.type === "taskNode").map((node) => node.id)).toEqual(["root", "child"])
 
     const dashed = edges.filter((edge) => edge.style?.strokeDasharray)
@@ -285,8 +292,7 @@ describe("getFlowGraph joined runs", () => {
     const { nodes } = getFlowGraph([root, child], "root", undefined, chosen)
     const treeRows = new Set(nodes.filter((node) => node.type === "taskNode").map((node) => node.position.y))
 
-    for (const node of nodes.filter((candidate) => candidate.type === "joinedTaskNode"))
-      expect(treeRows.has(node.position.y)).toBe(false)
+    for (const node of nodes.filter(isJoinedRoot)) expect(treeRows.has(node.position.y)).toBe(false)
   })
 
   it("draws exactly the runs the read chose, even ones its members don't link to", () => {
@@ -306,10 +312,9 @@ describe("getFlowGraph joined runs", () => {
       tasks: [aRun],
     })
 
-    const joinedNodes = nodes.filter((node) => node.type === "joinedTaskNode")
-    const drawn = joinedNodes.map((node) => (node.data as { taskId: string }).taskId)
-    expect(drawn.sort()).toEqual(["a-run", ...bIds.slice(0, -1)])
-    expect(joinedNodes.find((node) => node.id === "joined:a-run")?.data).toEqual({ taskId: "a-run", task: aRun })
+    const joinedNodes = nodes.filter(isJoinedRoot)
+    expect(joinedNodes.map(joinedRunId).sort()).toEqual(["a-run", ...bIds.slice(0, -1)])
+    expect(joinedNodes.find((node) => node.id === "joined:a-run")).toMatchObject({ type: "joinedRunNode", data: aRun })
     expect(edges.some((edge) => edge.target === "joined:b-099")).toBe(false)
     expect(edges.filter((edge) => edge.style?.strokeDasharray)).toHaveLength(MAX_JOINED_RUNS - 1)
     expect(hiddenJoinedRuns).toBe(1)
@@ -330,7 +335,7 @@ describe("getFlowGraph joined runs", () => {
       tasks: [],
     })
 
-    expect(nodes.filter((node) => node.type === "joinedTaskNode")).toHaveLength(1)
+    expect(nodes.filter(isJoinedRoot)).toHaveLength(1)
     expect(edges.filter((edge) => edge.style?.strokeDasharray)).toHaveLength(MAX_JOINED_RUNS)
     expect(hiddenJoinedRuns).toBe(0)
     expect(hiddenJoinLinks).toBe(600 - MAX_JOINED_RUNS)
@@ -354,8 +359,8 @@ describe("getFlowGraph joined runs", () => {
 
     const ids = nodes.map((node) => node.id)
     expect(new Set(ids).size).toBe(ids.length)
-    const runNode = nodes.find((node) => node.type === "joinedTaskNode")
-    expect(runNode?.data).toEqual({ taskId: "run-1", task: undefined })
+    const runNode = nodes.find(isJoinedRoot)
+    expect(runNode?.data).toEqual({ taskId: "run-1" })
     expect(ids).toContain("joined:joined:joined:run-1")
     const dashed = edges.filter((edge) => edge.style?.strokeDasharray).map((edge) => [edge.source, edge.target])
     expect(dashed).toEqual([
@@ -402,10 +407,7 @@ describe("getFlowGraph joined runs", () => {
     const dashed = graph.edges.filter((edge) => edge.style?.strokeDasharray).map((edge) => [edge.source, edge.target])
 
     it("draws a joined run's subtree as task nodes under its joined-run root", () => {
-      expect(node("joined:resource")).toMatchObject({
-        type: "joinedTaskNode",
-        data: { taskId: "resource", task: resource },
-      })
+      expect(node("joined:resource")).toMatchObject({ type: "joinedRunNode", data: resource })
       for (const task of [hierarchy, finalize, fail, metrics])
         expect(node(`joined:${task.id}`)).toMatchObject({ type: "taskNode", data: task })
       expect(solid).toEqual(
@@ -429,11 +431,11 @@ describe("getFlowGraph joined runs", () => {
         ["joined:metrics", "root"],
         ["joined:metrics", "joined:gone"],
       ])
-      expect(node("joined:nested")?.type).toBe("joinedTaskNode")
+      expect(node("joined:nested")).toMatchObject({ type: "joinedRunNode", data: nested })
       expect(node("joined:nested-child")).toMatchObject({ type: "taskNode", data: nestedChild })
       expect(solid).toContainEqual(["joined:nested", "joined:nested-child"])
       // A run the read couldn't load stays a placeholder.
-      expect(node("joined:gone")).toMatchObject({ type: "joinedTaskNode", data: { taskId: "gone", task: undefined } })
+      expect(node("joined:gone")).toMatchObject({ type: "joinedTaskNode", data: { taskId: "gone" } })
     })
 
     it("leaves the workflow members where they were", () => {
