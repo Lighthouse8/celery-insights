@@ -1,4 +1,4 @@
-import { create } from "zustand"
+import { create, type StateCreator } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
 
 export enum PreferredTheme {
@@ -16,7 +16,11 @@ interface Settings {
   taskNodeFields: string
   /** Fields (by path) switched off from the workflow graph; they stay in the configured list. */
   hiddenTaskNodeFields: string[]
+  /** The settings this browser's user chose. Only these are saved; the rest follow the defaults. */
+  userSet: SettingKey[]
 }
+
+type SettingKey = Exclude<keyof Settings, "userSet">
 
 const defaultSettings: Settings = {
   theme: PreferredTheme.SYSTEM,
@@ -26,7 +30,28 @@ const defaultSettings: Settings = {
   taskNodeLabels: false,
   taskNodeFields: "type",
   hiddenTaskNodeFields: [],
+  userSet: [],
 }
+
+// Writes defaults without recording them as the user's choice; set up with the store below.
+let setDefaults: (state: Partial<Settings>) => void = () => undefined
+
+/**
+ * Every write through the store's setState is a user's choice: its keys are saved and win over deployment
+ * defaults from then on, even when the chosen value equals the current default.
+ */
+const recordUserChoices =
+  (config: StateCreator<Settings>): StateCreator<Settings> =>
+  (set, get, api) => {
+    setDefaults = (state) => set(state)
+    const setState = api.setState
+    api.setState = ((partial: Partial<Settings> | ((state: Settings) => Partial<Settings>)) => {
+      const next = typeof partial === "function" ? partial(get()) : partial
+      const chosen = Object.keys(next).filter((key): key is SettingKey => key !== "userSet")
+      setState({ ...next, userSet: [...new Set([...get().userSet, ...chosen])] })
+    }) as typeof api.setState
+    return config(set, get, api)
+  }
 
 export const useDeploymentSettings = create<{ demoAvailable: boolean }>(() => ({ demoAvailable: true }))
 
@@ -38,12 +63,6 @@ export function applyDeploymentDefaults(config: {
   taskNodeLabels?: boolean
   taskNodeFields?: string
 }): void {
-  let saved: Record<string, unknown> | undefined
-  try {
-    saved = JSON.parse(localStorage.getItem("settings") ?? "null")?.state
-  } catch {
-    saved = undefined
-  }
   if (config.theme)
     defaultSettings.theme = { light: PreferredTheme.LIGHT, dark: PreferredTheme.DARK, system: PreferredTheme.SYSTEM }[
       config.theme
@@ -55,32 +74,35 @@ export function applyDeploymentDefaults(config: {
   const demoAvailable = config.demoAvailable ?? true
   if (!demoAvailable) defaultSettings.demo = false
   useDeploymentSettings.setState({ demoAvailable })
-  // Saved preferences win; every other setting follows the deployment default (see partialize below).
-  useSettingsStore.setState(
-    Object.fromEntries(Object.entries(defaultSettings).filter(([key]) => !saved || !(key in saved))),
+  const { userSet } = useSettingsStore.getState()
+  setDefaults(
+    Object.fromEntries(
+      Object.entries(defaultSettings).filter(([key]) => key !== "userSet" && !userSet.includes(key as SettingKey)),
+    ),
   )
-  if (!demoAvailable) useSettingsStore.setState({ demo: false })
+  if (!demoAvailable) setDefaults({ demo: false })
 }
 const useSettingsStore = create<Settings>()(
   persist(
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    (set) => defaultSettings,
+    recordUserChoices(() => defaultSettings),
     {
       name: "settings",
       storage: createJSONStorage(() => localStorage),
-      // Only settings that differ from the defaults are saved, so the rest keep following deployment defaults
-      // that change later instead of freezing at whatever they were on the browser's first visit.
-      partialize: (state) =>
-        Object.fromEntries(
-          Object.entries(state).filter(
-            ([key, value]) => JSON.stringify(value) !== JSON.stringify(defaultSettings[key as keyof Settings]),
-          ),
-        ) as Partial<Settings>,
+      partialize: (state) => ({
+        ...Object.fromEntries(state.userSet.map((key) => [key, state[key]])),
+        userSet: state.userSet,
+      }),
+      version: 1,
+      // Version 0 saved the whole state, and every saved setting won over deployment defaults.
+      migrate: (persisted, version) => {
+        const state = persisted as Partial<Settings>
+        return (version < 1 ? { ...state, userSet: Object.keys(state) } : state) as Settings
+      },
     },
   ),
 )
 
-export const resetSettings = () => useSettingsStore.setState(defaultSettings)
+export const resetSettings = () => setDefaults(defaultSettings)
 export const useIsDefaultSettings = () =>
   useSettingsStore((state) => JSON.stringify(state) === JSON.stringify(defaultSettings))
 

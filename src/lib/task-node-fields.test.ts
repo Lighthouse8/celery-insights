@@ -65,6 +65,14 @@ describe("reprItems", () => {
     expect(reprItems(fixtureKwargs("escaped_quote")).get("organization_id")).toBe("7")
     expect(reprItems(fixtureKwargs("inside")).get("organization_id")).toBe("2")
     expect(reprItems(fixtureKwargs("json_ascii")).get("channel")).toBe("café")
+    // saferepr of {'note': "a', b'c", 'organization_id': 3}: the first \' pairs with the second only if the
+    // backslash between them sits outside a string, which saferepr never writes.
+    expect(reprItems("{'note': 'a\\', b\\'c', 'organization_id': 3}")).toEqual(
+      new Map([
+        ["note", "a\\', b\\'c"],
+        ["organization_id", "3"],
+      ]),
+    )
   })
 
   it("keeps the items before Celery's truncation marker", () => {

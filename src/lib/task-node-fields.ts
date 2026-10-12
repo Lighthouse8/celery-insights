@@ -83,8 +83,8 @@ const closeCandidates = (text: string, start: number): number[] => {
 
 /**
  * Picks each quoted string's end the way the search matcher does: the first candidate after which the rest of
- * the text still splits into plain characters and quoted strings. Text no reading splits (bytes or a custom
- * __repr__ with a stray quote) takes the first candidate.
+ * the text still splits into quoted strings and plain characters without a backslash. Text no reading splits
+ * (bytes or a custom __repr__ with a stray quote) takes the first candidate.
  */
 const quotedStrings = (text: string) => {
   const splits = new Map<number, boolean>()
@@ -92,6 +92,8 @@ const quotedStrings = (text: string) => {
     const quote = /['"]/g
     quote.lastIndex = start
     const next = quote.exec(text)
+    // saferepr only writes a backslash inside a string, so one outside every string rejects the reading.
+    if (text.slice(start, next?.index).includes("\\")) return false
     if (!next) return true
     const known = splits.get(start)
     if (known !== undefined) return known

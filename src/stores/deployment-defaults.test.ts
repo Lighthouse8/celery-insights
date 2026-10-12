@@ -26,10 +26,10 @@ describe("deployment defaults", () => {
     expect(useSettingsStore.getState().rawEventsLimit).toBe(500)
   })
 
-  it("applies a deployment default to a setting the browser saved before it existed", () => {
-    useSettingsStore.setState({ theme: PreferredTheme.LIGHT, taskNodeLabels: false })
-    // Saved by a version without the task node settings.
+  it("keeps settings a version 0 browser saved and applies defaults to the rest", async () => {
     localStorage.setItem("settings", JSON.stringify({ state: { theme: PreferredTheme.LIGHT }, version: 0 }))
+    await useSettingsStore.persist.rehydrate()
+    expect(useSettingsStore.getState().userSet).toEqual(["theme"])
     applyDeploymentDefaults({ theme: "dark", taskNodeLabels: true, taskNodeFields: "type,kwargs.channel" })
     expect(useSettingsStore.getState()).toMatchObject({
       theme: PreferredTheme.LIGHT,
@@ -41,21 +41,32 @@ describe("deployment defaults", () => {
   it("applies a deployment default that changed after the browser last saved its settings", () => {
     localStorage.clear()
     resetSettings()
-    applyDeploymentDefaults({})
-    useSettingsStore.setState({ rawEventsLimit: 250 })
-    expect(JSON.parse(localStorage.getItem("settings")!).state).toEqual({ rawEventsLimit: 250 })
+    applyDeploymentDefaults({ taskNodeLabels: false })
+    useSettingsStore.setState({ hideWelcomeBanner: true })
+    expect(JSON.parse(localStorage.getItem("settings")!).state).toEqual({
+      hideWelcomeBanner: true,
+      userSet: ["hideWelcomeBanner"],
+    })
     applyDeploymentDefaults({ taskNodeLabels: true, taskNodeFields: "type,kwargs.level" })
     expect(useSettingsStore.getState()).toMatchObject({
-      rawEventsLimit: 250,
+      hideWelcomeBanner: true,
       taskNodeLabels: true,
       taskNodeFields: "type,kwargs.level",
     })
   })
 
-  it("applies deployment defaults when the saved settings can't be read", () => {
-    localStorage.setItem("settings", "{not json")
-    applyDeploymentDefaults({ rawEventsLimit: 750 })
-    expect(useSettingsStore.getState().rawEventsLimit).toBe(750)
+  it("keeps a chosen value that equals the default when the default changes, across reloads", async () => {
+    localStorage.clear()
+    resetSettings()
+    applyDeploymentDefaults({ taskNodeLabels: false, rawEventsLimit: 100 })
+    // Chosen before the deployment defaults below arrive, and equal to the defaults at the time.
+    useSettingsStore.setState({ taskNodeLabels: false, rawEventsLimit: 100 })
+    applyDeploymentDefaults({ taskNodeLabels: true, rawEventsLimit: 500 })
+    await useSettingsStore.persist.rehydrate()
+    applyDeploymentDefaults({ taskNodeLabels: true, rawEventsLimit: 500 })
+    expect(useSettingsStore.getState()).toMatchObject({ taskNodeLabels: false, rawEventsLimit: 100 })
+    resetSettings()
+    expect(useSettingsStore.getState()).toMatchObject({ taskNodeLabels: true, rawEventsLimit: 500, userSet: [] })
   })
 
   it("disables a saved demo preference and does not reenable it on reset", () => {
