@@ -297,6 +297,24 @@ try {
     expectedJoined.ids.map((id) => `task:${id}`),
   )
   await root.query("DELETE task WHERE workflow_id = 'pool'")
+  // Joined runs come from every member, not only the 1,000 most recent the read returns.
+  await root.query(
+    "FOR $i IN 0..1001 { CREATE type::record('task', 'big_' + <string>(10000 + $i)) SET state = 'SUCCESS', workflow_id = 'big', last_updated = d'2020-01-01T00:00:00Z' + <duration>(<string>$i + 's'); }; UPDATE task:big_10000 SET joined_tasks = ['hidden', 'big_10500'];",
+  )
+  const bigRead = buildRead({ operation: "task-workflow", taskId: "big_10999" })
+  for (const db of [root, scopedDatabase(root, { deny_fields: ["task.result.read"] })]) {
+    const big = (await db.query(bigRead.sql, bigRead.bindings).collect()).at(-1) as {
+      members: unknown[]
+      joined: Array<{ id: unknown }>
+    }
+    assert.equal(big.members.length, 1000)
+    assert.deepEqual(
+      big.joined.map((task) => String(task.id)),
+      ["task:hidden"],
+      "the oldest member's joined run loads and a joined member is not a joined run",
+    )
+  }
+  await root.query("DELETE task WHERE workflow_id = 'big'")
   await root.query("UPDATE task:sample SET joined_tasks = NONE")
   await root.query(
     "UPDATE task:sample SET args = 'private-input', kwargs = 'private-kwargs', exception = 'private-failure', traceback = 'private-traceback'; UPDATE worker:sample SET inspect = $inspect;",
