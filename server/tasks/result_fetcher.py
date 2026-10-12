@@ -84,10 +84,13 @@ def _build_task_meta_upsert(task_id: str, meta: dict, *, search_indexing_enabled
     }
 
     # A newer result over a finished run is the same id sent again. The same result read again (the
-    # poller forgets what it saw on restart) is still the same run.
+    # poller forgets what it saw on restart) is still the same run. A revoke is the one terminal state
+    # Celery stores after its event (Request._announce_revoked), so its result is newer than its own
+    # task-revoked.
     new_run = (
         f"$meta_apply_state AND $meta_previous.state IN {TERMINAL_TASK_STATES_SQL} "
-        "AND $meta_timestamp != $meta_previous.last_updated"
+        "AND $meta_timestamp != $meta_previous.last_updated "
+        "AND !($meta_previous.state = 'REVOKED' AND $state = 'REVOKED')"
     )
     set_clauses = [
         "state = IF $meta_apply_state THEN $state ELSE $meta_previous.state END",
@@ -98,9 +101,10 @@ def _build_task_meta_upsert(task_id: str, meta: dict, *, search_indexing_enabled
             for field in ("type", "args", "kwargs", "worker", "routing_key")
         ),
         # Retries only go up within a run; metadata from a failed attempt must not lower the count events
-        # raised. A new run has its own count, and the finished run's progress no longer applies.
-        "retries = IF $retries = NONE THEN $meta_previous.retries"
-        f" ELSE IF {new_run} THEN $retries"
+        # raised. A new run has its own count, unknown without result_extended, and the finished run's
+        # progress no longer applies.
+        f"retries = IF {new_run} THEN $retries"
+        " ELSE IF $retries = NONE THEN $meta_previous.retries"
         " ELSE math::max([$meta_previous.retries ?? 0, $retries]) END",
         f"progress = IF {new_run} THEN NONE ELSE $meta_previous.progress END",
         "kwargs_search_source = IF $kwargs != NONE AND ($meta_apply_state OR $meta_previous.kwargs = NONE) "
