@@ -93,6 +93,28 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
           }
         />
         <SettingRow
+          title="Product tour"
+          description="Start the guided walkthrough again."
+          control={
+            <Button variant="outline" size="sm" onClick={() => startTour()}>
+              Start tour
+            </Button>
+          }
+        />
+        <SettingRow
+          title="Task progress"
+          experimental
+          description="Show the progress tasks report with task-progress events, in a Progress box on the task page and as a bar under running tasks in the workflow graph."
+          helper={showTaskProgress ? "Currently shown" : "Currently hidden"}
+          control={
+            <Switch
+              aria-label="Show task progress"
+              checked={showTaskProgress}
+              onCheckedChange={(checked) => useSettingsStore.setState({ showTaskProgress: checked })}
+            />
+          }
+        />
+        <SettingRow
           title="Task node labels"
           experimental
           description="Show task fields under each task in the workflow graph."
@@ -122,28 +144,6 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
               disabled={!taskNodeLabels}
               aria-invalid={invalidFields.length > 0}
               onChange={(event) => useSettingsStore.setState({ taskNodeFields: event.target.value })}
-            />
-          }
-        />
-        <SettingRow
-          title="Product tour"
-          description="Start the guided walkthrough again."
-          control={
-            <Button variant="outline" size="sm" onClick={() => startTour()}>
-              Start tour
-            </Button>
-          }
-        />
-        <SettingRow
-          title="Task progress"
-          experimental
-          description="Show the progress tasks report with task-progress events, in a Progress box on the task page and as a bar under running tasks in the workflow graph."
-          helper={showTaskProgress ? "Currently shown" : "Currently hidden"}
-          control={
-            <Switch
-              aria-label="Show task progress"
-              checked={showTaskProgress}
-              onCheckedChange={(checked) => useSettingsStore.setState({ showTaskProgress: checked })}
             />
           }
         />
