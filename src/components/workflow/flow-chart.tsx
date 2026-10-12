@@ -6,7 +6,7 @@ import { TaskNodeFieldsContext, useTaskNodeFields } from "@hooks/use-task-node-f
 import { TASK_NODE_LABEL_GAP, TASK_NODE_LABEL_LINE_HEIGHT, TASK_NODE_LABEL_WIDTH } from "@lib/task-node-fields"
 import useSettingsStore from "@stores/use-settings-store"
 import type { Task } from "@/types/surreal-records"
-import { type JoinedRuns, MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
+import { type JoinedRuns, MAX_JOINED_RUNS, MAX_LINKING_MEMBERS, NO_JOINED_RUNS } from "@lib/joined-runs"
 import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
 import { toSvg } from "html-to-image"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -358,13 +358,17 @@ export const refreshNodeData = (nodes: Node[], tasks: Task[], joinedTasks: Task[
 
 const listFormat = new Intl.ListFormat("en", { type: "conjunction" })
 
-export const hiddenJoinsNote = (runs: number, links: number, branches = 0): string | undefined => {
+export const hiddenJoinsNote = (runs: number, links: number, branches = 0, membersCut = false): string | undefined => {
   const parts = [
     runs && `${runs} more joined run${runs === 1 ? "" : "s"}`,
     links && `${links} join link${links === 1 ? "" : "s"}`,
     branches && `${branches} joined-run branch${branches === 1 ? "" : "es"}`,
   ].filter((part): part is string => !!part)
-  return parts.length ? `${listFormat.format(parts)} not shown` : undefined
+  const lines = [
+    parts.length && `${listFormat.format(parts)} not shown`,
+    membersCut && `Joins from members beyond the first ${MAX_LINKING_MEMBERS.toLocaleString("en")} read aren't shown`,
+  ].filter((line): line is string => !!line)
+  return lines.length ? lines.join("\n") : undefined
 }
 
 const FOCUS_ZOOM = 1
@@ -470,8 +474,21 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [layoutKey, grid],
   )
-  // From the laid-out graph, not `nodes`, which changes on every measurement, selection and drag.
-  const minZoom = useMemo(() => canvasMinZoom(graph.nodes, width, height), [graph, width, height])
+  // Where the last drag left the graph's nodes; a new graph is laid out afresh.
+  const [dropped, setDropped] = useState<{ graph: typeof graph; nodes: Node[] }>()
+  // From the laid-out graph, or where a drag left it, not `nodes`, which changes on every measurement and selection.
+  const minZoom = useMemo(
+    () => canvasMinZoom(dropped?.graph === graph ? dropped.nodes : graph.nodes, width, height),
+    [dropped, graph, width, height],
+  )
+  const onNodeDragStop = useCallback(
+    (_event: unknown, _node: Node, moved: Node[]) => {
+      // The store may not hold the drag's last position change yet; the dragged nodes do.
+      const at = new Map(moved.map((node) => [node.id, node]))
+      setDropped({ graph, nodes: flow.getNodes().map((node) => at.get(node.id) ?? node) })
+    },
+    [flow, graph],
+  )
   const focusNode = useCallback(
     (nodeId: string, graphNodes: Node[] = flow.getNodes()) => {
       const viewport = focusViewport(graphNodes, graph.joinedBelow, nodeId, width, height)
@@ -505,8 +522,14 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layoutKey, setNodes, setEdges])
   const joinsNote = useMemo(
-    () => hiddenJoinsNote(graph.hiddenJoinedRuns, graph.hiddenJoinLinks, graph.hiddenJoinedBranches),
-    [graph],
+    () =>
+      hiddenJoinsNote(
+        graph.hiddenJoinedRuns,
+        graph.hiddenJoinLinks,
+        graph.hiddenJoinedBranches,
+        joinedRuns?.membersCut,
+      ),
+    [graph, joinedRuns],
   )
 
   // Any other change only refreshes node data, keeping each node where it is.
@@ -568,6 +591,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onNodeDragStop={onNodeDragStop}
         nodesDraggable={!locked}
         nodeTypes={nodeTypes}
         minZoom={minZoom}
@@ -617,7 +641,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
           </ControlButton>
         </Controls>
         {joinsNote && (
-          <Panel position="bottom-center" className="text-xs text-muted-foreground">
+          <Panel position="bottom-center" className="whitespace-pre-line text-center text-xs text-muted-foreground">
             {joinsNote}
           </Panel>
         )}

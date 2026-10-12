@@ -8,8 +8,8 @@ export const MAX_EXPANDED_TASKS = 2000
 export const MAX_EXPANSION_DEPTH = 20
 /**
  * Members whose joins the read considers, as many as the graph holds. Unordered, so the index scan stops there;
- * ordering by recency would read and sort every member.
- * ponytail: past this, other members' joins aren't candidates and an unread member can pass for a joined run.
+ * ordering by recency would read and sort every member. Past this, other members' joins aren't candidates and an
+ * unread member can pass for a joined run; the read reads one more member to flag that (`membersCut`).
  */
 export const MAX_LINKING_MEMBERS = 10000
 
@@ -26,6 +26,8 @@ export interface JoinedRuns {
   /** Every id the read's walk reached: the chosen runs and every child or joined run it tried to read. */
   walked: string[]
   cut: number
+  /** The read hit MAX_LINKING_MEMBERS: joins from members past those it read are missing. */
+  membersCut?: boolean
 }
 
 export const NO_JOINED_RUNS: JoinedRuns = { ids: [], total: 0, tasks: [], walked: [], cut: 0 }
@@ -47,9 +49,10 @@ const linksOf = (records: string, seen: string) =>
  * over the members, then a breadth-first walk of `children` and `joined_tasks` by point reads, never into members,
  * at most MAX_EXPANDED_TASKS reads and MAX_EXPANSION_DEPTH levels. `fields` are the result's joined-run fields.
  */
-export const joinedRunsQuery = (): { statements: string[]; fields: string } => {
+export const joinedRunsQuery = (linkingMembers = MAX_LINKING_MEMBERS): { statements: string[]; fields: string } => {
   const statements = [
-    `LET $links = SELECT record::id(id) AS task_id,joined_tasks FROM task WHERE workflow_id = $workflowId LIMIT ${MAX_LINKING_MEMBERS} TIMEOUT 2s`,
+    `LET $linkRows = SELECT record::id(id) AS task_id,joined_tasks FROM task WHERE workflow_id = $workflowId LIMIT ${linkingMembers + 1} TIMEOUT 2s`,
+    `LET $links = array::slice($linkRows,0,${linkingMembers})`,
     "LET $joinedCandidates = array::sort(array::complement(array::distinct(array::filter(array::flatten($links.joined_tasks),|$id| $id != NONE)),$links.task_id))",
     `LET $seen0 = array::slice($joinedCandidates,0,${MAX_JOINED_RUNS})`,
     `LET $found0 = ${lookup("$seen0")}`,
@@ -72,6 +75,6 @@ export const joinedRunsQuery = (): { statements: string[]; fields: string } => {
   const found = Array.from({ length: last + 1 }, (_, level) => `$found${level}`).join(",")
   return {
     statements,
-    fields: `joinedIds:$seen0,walkedIds:$seen${last},joinedTotal:array::len($joinedCandidates),expanded:array::concat(${found}),expansionCut:array::len(array::distinct(array::concat(${cut.join(",")},$beyond)))`,
+    fields: `joinedIds:$seen0,walkedIds:$seen${last},joinedTotal:array::len($joinedCandidates),expanded:array::concat(${found}),expansionCut:array::len(array::distinct(array::concat(${cut.join(",")},$beyond))),membersCut:array::len($linkRows) > ${linkingMembers}`,
   }
 }

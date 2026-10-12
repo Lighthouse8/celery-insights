@@ -1,10 +1,11 @@
 import { render, waitFor } from "@test-utils"
 import { createTask } from "@test-fixtures"
-import { MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
+import { fireEvent } from "@testing-library/react"
+import { type JoinedRuns, MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
 import { TASK_NODE_LABEL_GAP } from "@lib/task-node-fields"
 import { type Task, TaskState } from "@/types/surreal-records"
-import { ReactFlowProvider } from "@xyflow/react"
-import { createElement } from "react"
+import { ReactFlowProvider, useStoreApi } from "@xyflow/react"
+import { createElement, useEffect } from "react"
 import FlowChart, {
   canvasMinZoom,
   flowGrid,
@@ -809,6 +810,27 @@ describe("getFlowGraph joined runs", () => {
     expect(hiddenJoinsNote(50, 1)).toBe("50 more joined runs and 1 join link not shown")
   })
 
+  it("notes that joins from members the read didn't reach aren't shown once it hit the member cap", () => {
+    // The read took its links from members other than "recent", so "recent"'s run isn't a candidate.
+    const tasks = [createTask({ id: "root" }), createTask({ id: "recent", parent_id: "root", joined_tasks: ["run"] })]
+    const joinedRuns = { ...NO_JOINED_RUNS, membersCut: true }
+
+    const graph = getFlowGraph(tasks, "root", undefined, joinedRuns)
+
+    expect(graph.nodes.filter(isJoinedRoot)).toHaveLength(0)
+    expect(graph.edges.filter((edge) => edge.style?.strokeDasharray)).toHaveLength(0)
+    expect(hiddenJoinsNote(graph.hiddenJoinedRuns, graph.hiddenJoinLinks, graph.hiddenJoinedBranches, true)).toBe(
+      "Joins from members beyond the first 10,000 read aren't shown",
+    )
+    expect(hiddenJoinsNote(1, 0, 0, true)).toBe(
+      "1 more joined run not shown\nJoins from members beyond the first 10,000 read aren't shown",
+    )
+    const { getByText } = render(
+      createElement(ReactFlowProvider, null, createElement(FlowChart, { tasks, rootTaskId: "root", joinedRuns })),
+    )
+    expect(getByText("Joins from members beyond the first 10,000 read aren't shown")).toBeInTheDocument()
+  })
+
   it("gives joined nodes ids no member node has", () => {
     const tasks = [
       createTask({ id: "root", joined_tasks: ["run-1", "joined:run-1"] }),
@@ -979,5 +1001,44 @@ describe("FlowChart first view", () => {
 
     rerender(chart([root, createTask({ id: "old", parent_id: "root" })], "root"))
     expect(viewportMoves.setViewport).toHaveBeenCalledOnce()
+  })
+})
+
+describe("FlowChart canvas bound", () => {
+  it("lets the canvas zoom out far enough to frame a joined run dragged away from its joiner", () => {
+    const root = createTask({ id: "root", joined_tasks: ["run"] })
+    const run = createTask({ id: "run", workflow_id: "other" })
+    const joinedRuns: JoinedRuns = { ids: ["run"], total: 1, tasks: [run], walked: ["run"], cut: 0 }
+    let store: ReturnType<typeof useStoreApi> | undefined
+    const StoreProbe = () => {
+      const api = useStoreApi()
+      useEffect(() => {
+        store = api
+      }, [api])
+      return null
+    }
+    const { container } = render(
+      createElement(
+        ReactFlowProvider,
+        null,
+        createElement(FlowChart, { tasks: [root], rootTaskId: "root", currentTaskId: "root", joinedRuns }),
+        createElement(StoreProbe),
+      ),
+    )
+    expect(store!.getState().minZoom).toBe(0.1)
+
+    // Unlock, then drag the joined run about 100,000px below its joiner.
+    fireEvent.click(container.querySelector(".react-flow__controls-button")!)
+    const node = container.querySelector('.react-flow__node[data-id="joined:run"]')!
+    fireEvent.mouseDown(node, { clientX: 0, clientY: 0, button: 0, view: window })
+    fireEvent.mouseMove(window, { clientX: 0, clientY: 100, view: window })
+    fireEvent.mouseMove(window, { clientX: 0, clientY: 100000, view: window })
+    fireEvent.mouseUp(window, { clientX: 0, clientY: 100000, view: window })
+
+    const { nodes, width, height, minZoom } = store!.getState()
+    expect(nodes.find((node) => node.id === "joined:run")!.position.y).toBeGreaterThan(90000)
+    const framed = focusViewport(nodes, new Map([["root", ["joined:run"]]]), "root", width, height)!
+    expect(framed.zoom).toBeLessThan(0.1)
+    expect(minZoom).toBeLessThanOrEqual(framed.zoom)
   })
 })

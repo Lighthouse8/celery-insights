@@ -5,7 +5,7 @@ import { scopedDatabase, intersectScopes } from "../runtime/security/read-scope"
 import { SearchIndexes } from "../runtime/search-indexes"
 import { buildRead, operations } from "../runtime/observation/queries"
 import { parseTask, type SurrealTask } from "../src/types/surreal-records"
-import { MAX_EXPANDED_TASKS, MAX_EXPANSION_DEPTH, MAX_JOINED_RUNS } from "../src/lib/joined-runs"
+import { joinedRunsQuery, MAX_EXPANDED_TASKS, MAX_EXPANSION_DEPTH, MAX_JOINED_RUNS } from "../src/lib/joined-runs"
 import assert from "node:assert/strict"
 import { createServer } from "node:net"
 import { randomBytes } from "node:crypto"
@@ -290,6 +290,7 @@ try {
     joinedIds: string[]
     walkedIds: string[]
     joinedTotal: number
+    membersCut: boolean
   }
   const workflowRead = buildRead({ operation: "task-workflow", taskId: "sample" })
   const readWorkflow = async (db: Pick<Surreal, "query">, read = workflowRead) =>
@@ -333,11 +334,23 @@ try {
     // The oldest member, beyond the members returned, still competes for the first ids.
     assert.deepEqual(big.joinedIds, ["a_run", ...bIds.slice(0, -1)])
     assert.equal(big.joinedTotal, MAX_JOINED_RUNS + 1)
+    assert.equal(big.membersCut, false)
     assert.deepEqual(
       big.expanded.map((task) => String(task.id)),
       ["task:a_run"],
     )
   }
+  // Past the member cap the read takes links from only some members, so the newest member (the first the graph holds)
+  // can lose its joins; the read flags that. (10,001 members take minutes to seed, so this lowers the cap to 1,000.)
+  const capped = joinedRunsQuery(1000)
+  const cappedRead = (
+    await root.query(`LET $workflowId = 'big';${capped.statements.join(";")};RETURN {${capped.fields}};`).collect()
+  ).at(-1) as WorkflowRead
+  assert.deepEqual(
+    [cappedRead.joinedIds, cappedRead.membersCut],
+    [["a_run"], true],
+    "big_11000's joins fall outside the links read, and the read flags it",
+  )
   await root.query("DELETE task WHERE workflow_id = 'big'; DELETE task:a_run;")
   // A joined run expands into its own subtree, by point reads along children and joined_tasks, never into the rest
   // of its workflow. Shapes from Fyr: the hierarchy task also lists finalize, whose parent is the resource task.
