@@ -4,6 +4,7 @@ import { initializeAuthentication } from "../runtime/security/http"
 import { scopedDatabase, intersectScopes } from "../runtime/security/read-scope"
 import { SearchIndexes } from "../runtime/search-indexes"
 import { buildRead, operations } from "../runtime/observation/queries"
+import { joinedRunIds } from "../src/lib/joined-runs"
 import assert from "node:assert/strict"
 import { createServer } from "node:net"
 import { randomBytes } from "node:crypto"
@@ -279,6 +280,23 @@ try {
   )
   assert.equal(payloadJoined[0].result, undefined)
   assert.deepEqual(await joinedRuns(scoped), [], "task scopes hide joined runs like other relationships")
+  // The read loads the same capped, ordered joined runs the flowchart draws.
+  await root.query(
+    "FOR $i IN 0..105 { CREATE type::record('task', 'pool_' + <string>(1000 + $i)) SET state = 'STARTED', workflow_id = 'pool', last_updated = time::now(); }; UPDATE task:sample SET joined_tasks = array::concat(['sample'], array::reverse((SELECT VALUE record::id(id) FROM task WHERE workflow_id = 'pool')));",
+  )
+  const pooled = (await root.query(workflowRead.sql, workflowRead.bindings).collect()).at(-1) as {
+    members: Array<{ id: unknown; joined_tasks?: string[] }>
+    joined: Array<{ id: unknown }>
+  }
+  const expectedJoined = joinedRunIds(
+    pooled.members.map((member) => ({ ...member, id: String(member.id).replace(/^task:/, "") })),
+  )
+  assert.equal(expectedJoined.total, 105)
+  assert.deepEqual(
+    pooled.joined.map((task) => String(task.id)),
+    expectedJoined.ids.map((id) => `task:${id}`),
+  )
+  await root.query("DELETE task WHERE workflow_id = 'pool'")
   await root.query("UPDATE task:sample SET joined_tasks = NONE")
   await root.query(
     "UPDATE task:sample SET args = 'private-input', kwargs = 'private-kwargs', exception = 'private-failure', traceback = 'private-traceback'; UPDATE worker:sample SET inspect = $inspect;",

@@ -64,7 +64,7 @@ const BannerFlowchart: React.FC = () => {
   const graph: ReturnType<typeof getFlowGraph> = useMemo(
     () =>
       isSmallScreen
-        ? { nodes: [], edges: [] }
+        ? { nodes: [], edges: [], hiddenJoinedRuns: 0 }
         : getFlowGraph(
             demoTasks,
             demoTasks[0].id,

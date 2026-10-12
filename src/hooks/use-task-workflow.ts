@@ -1,5 +1,6 @@
 import { queryObservation, isObservationRefresh } from "@lib/observation-query"
 import { useSurrealDB } from "@components/surrealdb-provider"
+import { MAX_JOINED_RUNS } from "@lib/joined-runs"
 import { extractId, type SurrealTask, type SurrealWorkflow } from "@/types/surreal-records"
 import type { LiveSubscription, Uuid } from "surrealdb"
 import { useCallback, useEffect, useRef, useState } from "react"
@@ -57,7 +58,7 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         `LET $task = (SELECT * FROM type::record('task', $taskId))[0];
                  LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId;
                  LET $members = SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC;
-                 LET $joinedIds = array::slice(array::distinct(array::filter(array::flatten($members.joined_tasks), |$id| $id != NONE)), 0, 100);
+                 LET $joinedIds = array::slice(array::sort(array::complement(array::distinct(array::filter(array::flatten($members.joined_tasks), |$id| $id != NONE)), array::map($members, |$member| record::id($member.id)))), 0, ${MAX_JOINED_RUNS});
                  RETURN {
                     task: $task,
                     workflow: (SELECT * FROM type::record('workflow', $workflowId))[0],

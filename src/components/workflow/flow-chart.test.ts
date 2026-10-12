@@ -1,4 +1,5 @@
 import { createTask } from "@test-fixtures"
+import { joinedRunIds, MAX_JOINED_RUNS } from "@lib/joined-runs"
 import { getFlowGraph } from "./flow-chart"
 
 describe("getFlowGraph", () => {
@@ -285,6 +286,38 @@ describe("getFlowGraph joined runs", () => {
 
     for (const node of nodes.filter((candidate) => candidate.type === "joinedTaskNode"))
       expect(treeRows.has(node.position.y)).toBe(false)
+  })
+
+  it("bounds joined nodes and edges and draws the runs the read loads", () => {
+    const runIds = Array.from({ length: 150 }, (_, index) => `run-${String(index).padStart(3, "0")}`)
+    const fanOut = createTask({ id: "root", joined_tasks: [...runIds].reverse() })
+    const children = Array.from({ length: 300 }, (_, index) =>
+      createTask({ id: `child-${index}`, parent_id: "root", joined_tasks: ["run-000", "root"] }),
+    )
+    const tasks = [fanOut, ...children]
+
+    const { nodes, edges, hiddenJoinedRuns } = getFlowGraph(tasks, "root")
+
+    const joinedNodes = nodes.filter((node) => node.type === "joinedTaskNode")
+    expect(joinedNodes.map((node) => (node.data as { taskId: string }).taskId).sort()).toEqual(joinedRunIds(tasks).ids)
+    expect(joinedNodes).toHaveLength(MAX_JOINED_RUNS)
+    expect(edges.filter((edge) => edge.style?.strokeDasharray)).toHaveLength(MAX_JOINED_RUNS)
+    expect(hiddenJoinedRuns).toBe(50)
+  })
+
+  it("bounds dashed edges when many members join the same run", () => {
+    const tasks = [
+      createTask({ id: "root" }),
+      ...Array.from({ length: 300 }, (_, index) =>
+        createTask({ id: `child-${index}`, parent_id: "root", joined_tasks: ["shared"] }),
+      ),
+    ]
+
+    const { nodes, edges, hiddenJoinedRuns } = getFlowGraph(tasks, "root")
+
+    expect(nodes.filter((node) => node.type === "joinedTaskNode")).toHaveLength(1)
+    expect(edges.filter((edge) => edge.style?.strokeDasharray)).toHaveLength(MAX_JOINED_RUNS)
+    expect(hiddenJoinedRuns).toBe(0)
   })
 
   it("draws nothing extra without joins", () => {
