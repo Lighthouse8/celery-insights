@@ -1,6 +1,9 @@
 import { parseTaskNodeFields, type TaskNodeField } from "@lib/task-node-fields"
 import useSettingsStore from "@stores/use-settings-store"
-import { useMemo } from "react"
+import { createContext, useMemo } from "react"
+
+/** The fields every task node labels, parsed once by the graph rather than per node. */
+export const TaskNodeFieldsContext = createContext<TaskNodeField[]>([])
 
 /** The configured task node fields, and the ones the workflow graph shows (none while labels are off). */
 export const useTaskNodeFields = (): { fields: TaskNodeField[]; visible: TaskNodeField[] } => {

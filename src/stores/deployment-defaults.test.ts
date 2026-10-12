@@ -38,6 +38,26 @@ describe("deployment defaults", () => {
     })
   })
 
+  it("applies a deployment default that changed after the browser last saved its settings", () => {
+    localStorage.clear()
+    resetSettings()
+    applyDeploymentDefaults({})
+    useSettingsStore.setState({ rawEventsLimit: 250 })
+    expect(JSON.parse(localStorage.getItem("settings")!).state).toEqual({ rawEventsLimit: 250 })
+    applyDeploymentDefaults({ taskNodeLabels: true, taskNodeFields: "type,kwargs.level" })
+    expect(useSettingsStore.getState()).toMatchObject({
+      rawEventsLimit: 250,
+      taskNodeLabels: true,
+      taskNodeFields: "type,kwargs.level",
+    })
+  })
+
+  it("applies deployment defaults when the saved settings can't be read", () => {
+    localStorage.setItem("settings", "{not json")
+    applyDeploymentDefaults({ rawEventsLimit: 750 })
+    expect(useSettingsStore.getState().rawEventsLimit).toBe(750)
+  })
+
   it("disables a saved demo preference and does not reenable it on reset", () => {
     useSettingsStore.setState({ demo: true })
     applyDeploymentDefaults({ demoAvailable: false })

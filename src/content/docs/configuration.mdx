@@ -338,7 +338,7 @@ task_node_fields = "type,kwargs.channel,kwargs.organization_id:org"
 
 Or set `CELERY_INSIGHTS_UI_TASK_NODE_LABELS=true` and `CELERY_INSIGHTS_UI_TASK_NODE_FIELDS=type,kwargs.channel,kwargs.organization_id:org`.
 
-Fields are comma-separated: a task attribute (`type`, `worker`, `routing_key`, `state`), `kwargs.<name>`, or `args.<index>`. Add `:alias` to rename a field in its label. The task name shows its last dotted part; hover a label for the full value. Argument labels need payload access and are empty for tasks whose arguments are restricted.
+Fields are comma-separated: a task attribute (`id`, `type`, `state`, `worker`, `routing_key`, `exchange`, `retries`, `runtime`, `eta`, `expires`, `root_id`, `parent_id`), `kwargs.<name>`, or `args.<index>`. Add `:alias` to rename a field in its label. The task name shows its last dotted part; hover a label for the full value. Argument labels need payload access and are empty for tasks whose arguments are restricted.
 
 ## Retention and cleanup
 

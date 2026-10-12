@@ -108,7 +108,7 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
               Task node fields <Badge variant="outline">Experimental</Badge>
             </span>
           }
-          description="Comma-separated fields for task node labels: a task attribute (type, worker, routing_key), kwargs.<name>, or args.<index>. Add :alias to rename a field in its label."
+          description="Comma-separated fields for task node labels: a task attribute (type, state, worker, routing_key, …), kwargs.<name>, or args.<index>. Add :alias to rename a field in its label."
           helper={
             invalidFields.length
               ? `Ignoring ${invalidFields.join(", ")}`

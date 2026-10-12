@@ -55,7 +55,7 @@ export function applyDeploymentDefaults(config: {
   const demoAvailable = config.demoAvailable ?? true
   if (!demoAvailable) defaultSettings.demo = false
   useDeploymentSettings.setState({ demoAvailable })
-  // Saved preferences win, but a setting the browser never saved (it predates the setting) takes the default.
+  // Saved preferences win; every other setting follows the deployment default (see partialize below).
   useSettingsStore.setState(
     Object.fromEntries(Object.entries(defaultSettings).filter(([key]) => !saved || !(key in saved))),
   )
@@ -68,6 +68,14 @@ const useSettingsStore = create<Settings>()(
     {
       name: "settings",
       storage: createJSONStorage(() => localStorage),
+      // Only settings that differ from the defaults are saved, so the rest keep following deployment defaults
+      // that change later instead of freezing at whatever they were on the browser's first visit.
+      partialize: (state) =>
+        Object.fromEntries(
+          Object.entries(state).filter(
+            ([key, value]) => JSON.stringify(value) !== JSON.stringify(defaultSettings[key as keyof Settings]),
+          ),
+        ) as Partial<Settings>,
     },
   ),
 )

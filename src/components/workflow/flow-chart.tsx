@@ -1,14 +1,14 @@
+import TaskLabelsControl from "@components/workflow/task-labels-control"
 import TaskNode from "@components/workflow/task-node"
-import { Checkbox } from "@components/ui/checkbox"
-import { Popover, PopoverContent, PopoverTrigger } from "@components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@components/ui/tooltip"
 import { useIsDark } from "@hooks/use-is-dark"
-import { useTaskNodeFields } from "@hooks/use-task-node-fields"
+import { TaskNodeFieldsContext, useTaskNodeFields } from "@hooks/use-task-node-fields"
+import { TASK_NODE_LABEL_GAP, TASK_NODE_LABEL_LINE_HEIGHT, TASK_NODE_LABEL_WIDTH } from "@lib/task-node-fields"
 import useSettingsStore from "@stores/use-settings-store"
 import type { Task } from "@/types/surreal-records"
-import { Camera, Focus, Maximize2, Move, Navigation, Tags } from "lucide-react"
+import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
 import { toSvg } from "html-to-image"
-import React, { useCallback, useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Background,
   ControlButton,
@@ -19,6 +19,7 @@ import {
   MiniMap,
   type Node,
   ReactFlow,
+  type Rect,
   useEdgesState,
   useNodesState,
   useReactFlow,
@@ -31,11 +32,41 @@ export interface FlowGrid {
 }
 
 const DEFAULT_GRID: FlowGrid = { columnWidth: 180, rowHeight: 100 }
-const LABEL_LINE_HEIGHT = 14
+const AVATAR_SIZE = 60
 
 /** Task node labels hang under the avatar: columns widen to fit them, and rows grow by a line per field. */
 export const flowGrid = (labelLines: number): FlowGrid =>
-  labelLines ? { columnWidth: 260, rowHeight: DEFAULT_GRID.rowHeight + labelLines * LABEL_LINE_HEIGHT } : DEFAULT_GRID
+  labelLines
+    ? {
+        columnWidth: TASK_NODE_LABEL_WIDTH + 40,
+        rowHeight: DEFAULT_GRID.rowHeight + labelLines * TASK_NODE_LABEL_LINE_HEIGHT,
+      }
+    : DEFAULT_GRID
+
+/**
+ * React Flow measures a task node as its avatar; labels overhang it on both sides and below. Widen measured
+ * node bounds by that overhang so framing and image export keep the outer labels in view.
+ */
+export const labelledBounds = (bounds: Rect, labelLines: number): Rect => {
+  if (!labelLines) return bounds
+  const overhang = (TASK_NODE_LABEL_WIDTH - AVATAR_SIZE) / 2
+  return {
+    x: bounds.x - overhang,
+    y: bounds.y,
+    width: bounds.width + 2 * overhang,
+    height: bounds.height + TASK_NODE_LABEL_GAP + labelLines * TASK_NODE_LABEL_LINE_HEIGHT,
+  }
+}
+
+/** Moves laid-out (or dragged) nodes onto a new grid, keeping each one's place relative to the others. */
+export const respaceNodes = (nodes: Node[], from: FlowGrid, to: FlowGrid): Node[] =>
+  nodes.map((node) => ({
+    ...node,
+    position: {
+      x: (node.position.x * to.columnWidth) / from.columnWidth,
+      y: (node.position.y * to.rowHeight) / from.rowHeight,
+    },
+  }))
 
 const createNode = (task: Task, x: number, y: number, grid: FlowGrid, nodeId?: string): Node => ({
   id: nodeId || task.id,
@@ -162,8 +193,8 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
   const isDark = useIsDark()
   const { fields, visible } = useTaskNodeFields()
   const labelsEnabled = useSettingsStore((state) => state.taskNodeLabels)
-  const hiddenFields = useSettingsStore((state) => state.hiddenTaskNodeFields)
   const grid = useMemo(() => flowGrid(visible.length), [visible.length])
+  const gridRef = useRef(grid)
 
   const focusNode = useCallback(
     (nodeId: string) => {
@@ -178,10 +209,17 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
     [flow, nodes],
   )
 
-  const fitView = useCallback(() => flow.fitView({ duration: ZOOM_ANIMATION_SPEED }), [flow])
+  const fitView = useCallback(() => {
+    const graphNodes = flow.getNodes()
+    if (graphNodes.length)
+      flow.fitBounds(labelledBounds(flow.getNodesBounds(graphNodes), visible.length), {
+        duration: ZOOM_ANIMATION_SPEED,
+        padding: 0.1,
+      })
+  }, [flow, visible.length])
 
   useEffect(() => {
-    const graph = getFlowGraph(tasks, rootTaskId, undefined, grid)
+    const graph = getFlowGraph(tasks, rootTaskId, undefined, gridRef.current)
     setNodes(graph.nodes)
     setEdges(graph.edges)
     if (!isInitialized && currentTaskId) {
@@ -194,7 +232,15 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
     }
     setInitialized(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, rootTaskId, grid, setNodes, setEdges, flow])
+  }, [tasks, rootTaskId, setNodes, setEdges, flow])
+
+  // Switching labels or fields respaces the nodes in place rather than laying the graph out again.
+  useEffect(() => {
+    const previous = gridRef.current
+    if (previous === grid) return
+    gridRef.current = grid
+    setNodes((current) => respaceNodes(current, previous, grid))
+  }, [grid, setNodes])
 
   useEffect(() => {
     if (!currentTaskId) fitView()
@@ -206,7 +252,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
   const hoverColor = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.04)"
 
   const handleDownloadImage = useCallback(() => {
-    const nodesBounds = getNodesBounds(nodes)
+    const nodesBounds = labelledBounds(getNodesBounds(nodes), visible.length)
     const viewport = getViewportForBounds(nodesBounds, EXPORT_IMAGE_WIDTH, EXPORT_IMAGE_HEIGHT, 0.5, 2, 0)
     const element = document.querySelector(".react-flow__viewport") as HTMLElement
     if (!element) return
@@ -221,102 +267,70 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
         transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
       },
     }).then(downloadImage)
-  }, [nodes, bgColor])
+  }, [nodes, bgColor, visible.length])
 
   return (
-    <ReactFlow
-      nodes={nodes}
-      edges={edges}
-      onNodesChange={onNodesChange}
-      onEdgesChange={onEdgesChange}
-      nodesDraggable={!locked}
-      nodeTypes={nodeTypes}
-    >
-      <Background />
-      <Controls showZoom={false} showFitView={false} showInteractive={false}>
-        <ControlButton onClick={() => setLocked((locked) => !locked)}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="flex items-center justify-center">
-                {locked ? <Move className="size-3" /> : <Navigation className="size-3" />}
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="right">{locked ? "Move nodes" : "Move camera"}</TooltipContent>
-          </Tooltip>
-        </ControlButton>
-        <ControlButton onClick={() => fitView()}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="flex items-center justify-center">
-                <Maximize2 className="size-3" />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="right">Fit view</TooltipContent>
-          </Tooltip>
-        </ControlButton>
-        <ControlButton onClick={() => currentTaskId && focusNode(currentTaskId)} disabled={!currentTaskId}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="flex items-center justify-center">
-                <Focus className="size-3" />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="right">Focus current task</TooltipContent>
-          </Tooltip>
-        </ControlButton>
-        {labelsEnabled && (
-          <Popover>
+    <TaskNodeFieldsContext.Provider value={visible}>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        nodesDraggable={!locked}
+        nodeTypes={nodeTypes}
+      >
+        <Background />
+        <Controls showZoom={false} showFitView={false} showInteractive={false}>
+          <ControlButton onClick={() => setLocked((locked) => !locked)}>
             <Tooltip>
-              <PopoverTrigger asChild>
-                <TooltipTrigger asChild>
-                  <ControlButton aria-label="Task labels">
-                    <Tags className="size-3" />
-                  </ControlButton>
-                </TooltipTrigger>
-              </PopoverTrigger>
-              <TooltipContent side="right">Task labels</TooltipContent>
+              <TooltipTrigger asChild>
+                <span className="flex items-center justify-center">
+                  {locked ? <Move className="size-3" /> : <Navigation className="size-3" />}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right">{locked ? "Move nodes" : "Move camera"}</TooltipContent>
             </Tooltip>
-            <PopoverContent side="right" align="end" className="w-56 space-y-2 p-3">
-              {fields.length ? (
-                fields.map((field) => (
-                  <label key={field.path} className="flex items-center gap-2 text-sm">
-                    <Checkbox
-                      checked={!hiddenFields.includes(field.path)}
-                      onCheckedChange={(checked) =>
-                        useSettingsStore.setState({
-                          hiddenTaskNodeFields: checked
-                            ? hiddenFields.filter((path) => path !== field.path)
-                            : [...hiddenFields, field.path],
-                        })
-                      }
-                    />
-                    <span className="truncate font-mono text-xs">{field.path}</span>
-                  </label>
-                ))
-              ) : (
-                <p className="text-sm text-muted-foreground">No task node fields configured.</p>
-              )}
-            </PopoverContent>
-          </Popover>
-        )}
-        <ControlButton onClick={() => handleDownloadImage()}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="flex items-center justify-center">
-                <Camera className="size-3" />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="right">Save as image</TooltipContent>
-          </Tooltip>
-        </ControlButton>
-      </Controls>
-      <MiniMap
-        position="top-right"
-        style={{ backgroundColor: bgColor, height: 100, width: 200 }}
-        maskColor={hoverColor}
-        pannable
-      />
-    </ReactFlow>
+          </ControlButton>
+          <ControlButton onClick={() => fitView()}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="flex items-center justify-center">
+                  <Maximize2 className="size-3" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right">Fit view</TooltipContent>
+            </Tooltip>
+          </ControlButton>
+          <ControlButton onClick={() => currentTaskId && focusNode(currentTaskId)} disabled={!currentTaskId}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="flex items-center justify-center">
+                  <Focus className="size-3" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right">Focus current task</TooltipContent>
+            </Tooltip>
+          </ControlButton>
+          {labelsEnabled && <TaskLabelsControl fields={fields} />}
+          <ControlButton onClick={() => handleDownloadImage()}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="flex items-center justify-center">
+                  <Camera className="size-3" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right">Save as image</TooltipContent>
+            </Tooltip>
+          </ControlButton>
+        </Controls>
+        <MiniMap
+          position="top-right"
+          style={{ backgroundColor: bgColor, height: 100, width: 200 }}
+          maskColor={hoverColor}
+          pannable
+        />
+      </ReactFlow>
+    </TaskNodeFieldsContext.Provider>
   )
 }
 
