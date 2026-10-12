@@ -371,7 +371,8 @@ try {
       assert.equal(task[field], undefined, `${field} is not read for an expanded task`)
   assert(JSON.stringify(heavy).length < 1024 * 1024, "expanded runs stay far below the response limit")
   await root.query("DELETE task WHERE string::starts_with(workflow_id, 'heavy')")
-  // Bounds: at most MAX_EXPANDED_TASKS reads, MAX_EXPANSION_DEPTH levels below a run; the rest counts as cut.
+  // Bounds: at most MAX_EXPANDED_TASKS reads, MAX_EXPANSION_DEPTH levels below the runs the workflow joined; the
+  // rest counts as cut.
   // (The wide children get their own workflow ids: SurrealDB 3.3.0 inserts thousands of equal index values slowly.)
   await root.query(
     `CREATE task:wide SET state = 'STARTED', workflow_id = 'wide', children = $wideChildren, last_updated = time::now();
@@ -385,7 +386,7 @@ try {
   assert.equal(wide.expansionCut, 101, "the root and the first wide children fit; the other 101 are cut")
   await root.query("UPDATE task:sample SET joined_tasks = ['deep_0']")
   const deep = await readWorkflow(root)
-  assert.equal(deep.expanded.length, MAX_EXPANSION_DEPTH + 1, "a run's root and MAX_EXPANSION_DEPTH levels below it")
+  assert.equal(deep.expanded.length, MAX_EXPANSION_DEPTH + 1, "the joined run and MAX_EXPANSION_DEPTH levels below it")
   assert.equal(deep.expansionCut, 1)
   await root.query("DELETE task WHERE workflow_id = 'deep' OR string::starts_with(workflow_id, 'wide')")
   await root.query("UPDATE task:sample SET joined_tasks = NONE")

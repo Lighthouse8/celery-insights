@@ -43,7 +43,7 @@ def refresh_reports(self, account_id):
 - The task page lists joined runs under Related Tasks. The workflow graph expands each joined run in place: the run is a dashed node labelled "joined run", linked from the joining task by a dashed edge, with the tasks below it (its children, theirs, and so on, plus runs those joined) drawn under it as ordinary task nodes with live state and progress. Select the joined run to open its own page and workflow.
 - Only the joined run's own subtree is drawn, not the rest of its workflow. The expanded tasks are not members of the current workflow: they don't appear in the timeline or count toward its summary.
 - A joined run Celery Insights has not recorded is drawn as a dashed placeholder with its short id.
-- The graph draws at most 100 joined runs per workflow, the first by task id, and at most 100 dashed edges. It expands at most 2,000 joined-run tasks in all and 20 levels below each run; past that, branches stay collapsed. A note under the graph counts the joined runs, join links and branches left out.
+- The graph draws at most 100 joined runs per workflow, the first by task id, and at most 100 dashed edges. It expands at most 2,000 joined-run tasks in all, down to 20 levels below the runs the workflow joined (a run joined further down doesn't restart the count); past that, branches stay collapsed. A note under the graph counts the joined runs, join links and branches left out.
 - Joined task ids are relationships, so users whose read scope limits which tasks they see don't see them, like parent and child ids.
 - A join reported by a task Celery Insights has not recorded yet is ignored, but the raw event stays visible on the Live Events page.
 

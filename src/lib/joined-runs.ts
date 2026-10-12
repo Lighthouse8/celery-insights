@@ -4,7 +4,7 @@ import type { Task } from "@/types/surreal-records"
 export const MAX_JOINED_RUNS = 100
 /** Tasks of joined runs (their roots and expanded descendants) one workflow view reads. */
 export const MAX_EXPANDED_TASKS = 2000
-/** Levels below a joined run's root the read walks. */
+/** Levels the read walks below the runs the workflow joined; runs joined further down share the count. */
 export const MAX_EXPANSION_DEPTH = 20
 
 /**
