@@ -1,6 +1,6 @@
 import { queryObservation, isObservationRefresh } from "@lib/observation-query"
 import { useSurrealDB } from "@components/surrealdb-provider"
-import { MAX_JOINED_RUNS } from "@lib/joined-runs"
+import { joinedRunIds, MAX_JOINED_RUNS } from "@lib/joined-runs"
 import { extractId, type SurrealTask, type SurrealWorkflow } from "@/types/surreal-records"
 import type { LiveSubscription, Uuid } from "surrealdb"
 import { useCallback, useEffect, useRef, useState } from "react"
@@ -76,7 +76,11 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         joined: Array.isArray(result?.joined) ? result.joined : [],
       }
       workflowIdRef.current = next.task?.workflow_id || next.task?.root_id || next.task?.id?.toString() || taskId
-      joinedIdsRef.current = new Set(next.joined.map((joined) => extractId(joined.id)))
+      // The ids the read asked for, not the records it found: a run that has no row yet must refresh when it gets one.
+      joinedIdsRef.current = new Set(
+        joinedRunIds(next.members.map((member) => ({ id: extractId(member.id), joined_tasks: member.joined_tasks })))
+          .ids,
+      )
       setData(next)
       setError(null)
     } catch (err) {

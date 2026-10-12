@@ -72,4 +72,29 @@ describe("useTaskWorkflow", () => {
     })
     expect(snapshotCalls()).toBe(2)
   })
+
+  it("refreshes when a joined run that had no row yet first appears", async () => {
+    mockQuery.mockImplementation(async (query: string) =>
+      query.startsWith("LIVE")
+        ? ["live-uuid"]
+        : [
+            null,
+            null,
+            {
+              task: { id: "task:root", workflow_id: "root", joined_tasks: ["later"] },
+              workflow: null,
+              members: [{ id: "task:root", workflow_id: "root", joined_tasks: ["later"] }],
+              joined: [],
+            },
+          ],
+    )
+    renderHook(() => useTaskWorkflow("root"))
+    await waitFor(() => expect(mockLiveOf).toHaveBeenCalled())
+
+    act(() => emit({ value: { id: "task:later", workflow_id: "other" } }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(snapshotCalls()).toBe(2)
+  })
 })
