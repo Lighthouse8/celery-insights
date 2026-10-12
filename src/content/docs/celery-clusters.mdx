@@ -53,6 +53,12 @@ def import_rows(self, rows):
 - Each event is stored and pushed to open pages, so throttle it in tight loops, as the example does.
 - A finished task keeps its last report, shown as "Last progress", so you can see where a failed task stopped.
 - Send `attempt=self.request.retries` with each report. It keeps reports from different attempts in order, even when the attempts run on workers whose clocks disagree.
+- How reports are ordered:
+  - Without `attempt`, report timestamps decide the order, so worker clocks need to agree.
+  - A tagged report always replaces an untagged one, so don't mix the two styles in one task.
+  - A new attempt clears the previous attempt's progress.
+  - A redelivered task (lost worker, expired visibility timeout) keeps the same retry count. Its reports are ordered by timestamp against the dead run's reports, so a replacement worker whose clock is behind can show the old count until its reports catch up.
+- `description` is text your task writes, so users without `task.result.read` see the counts but not the description.
 - Progress for a task Celery Insights has not recorded yet is ignored, but the raw event stays visible on the Live Events page.
 
 ## Standard RabbitMQ or Redis deployments
