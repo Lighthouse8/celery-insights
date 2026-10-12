@@ -2,6 +2,7 @@ import TaskAvatar from "@components/task/task-avatar"
 import { runningProgressPercent } from "@components/task/task-progress"
 import { Progress } from "@components/ui/progress"
 import { cn } from "@lib/utils"
+import useSettingsStore from "@stores/use-settings-store"
 import type { Task } from "@/types/surreal-records"
 import { Link } from "@tanstack/react-router"
 import React from "react"
@@ -11,7 +12,8 @@ type TaskNodeType = Node<Task & Record<string, unknown>, "taskNode" | "joinedRun
 
 /** `joined`: the root of a run a member joined, from another workflow: dashed, labelled, linked to its own page. */
 const TaskNode: React.FC<NodeProps<TaskNodeType> & { joined?: boolean }> = ({ data, joined }) => {
-  const progressPercent = runningProgressPercent(data)
+  const showTaskProgress = useSettingsStore((state) => state.showTaskProgress)
+  const progressPercent = showTaskProgress ? runningProgressPercent(data) : undefined
   return (
     <>
       <Handle type="target" position={Position.Left} />

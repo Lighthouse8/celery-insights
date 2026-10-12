@@ -1,5 +1,6 @@
 import { render, screen } from "@test-utils"
 import { createTask } from "@test-fixtures"
+import useSettingsStore, { resetSettings } from "@stores/use-settings-store"
 import { TaskState } from "@/types/surreal-records"
 import { ReactFlowProvider } from "@xyflow/react"
 import type { ComponentProps } from "react"
@@ -27,10 +28,14 @@ describe("JoinedRunNode", () => {
   })
 
   it("shows the progress bar of a running root like any task node", () => {
+    useSettingsStore.setState({ showTaskProgress: true })
+    onTestFinished(() => {
+      resetSettings()
+    })
     const task = createTask({
       id: "4f1c2a9e-run",
       state: TaskState.STARTED,
-      progress: { current: 3, total: 4, updated_at: new Date() },
+      progress: { current: 3, total: 4, sections: [], updated_at: new Date() },
     })
     render(
       <ReactFlowProvider>

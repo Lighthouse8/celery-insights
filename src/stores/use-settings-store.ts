@@ -12,6 +12,8 @@ interface Settings {
   hideWelcomeBanner: boolean
   demo: boolean
   rawEventsLimit: number
+  /** Experimental: show progress tasks report with task-progress events. */
+  showTaskProgress: boolean
 }
 
 const defaultSettings: Settings = {
@@ -19,6 +21,7 @@ const defaultSettings: Settings = {
   hideWelcomeBanner: false,
   demo: import.meta.env.DEV || Boolean(import.meta.env.VITE_DEMO_MODE),
   rawEventsLimit: 100,
+  showTaskProgress: false,
 }
 
 export const useDeploymentSettings = create<{ demoAvailable: boolean }>(() => ({ demoAvailable: true }))

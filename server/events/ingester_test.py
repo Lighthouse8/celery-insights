@@ -250,6 +250,33 @@ class TestBuildTaskProgressUpdate:
         assert "pg0_attempt" not in params
         assert "last_started_at IS NONE" in query
 
+    def test_sections_keep_usable_entries_only(self):
+        sections = [
+            {"description": "x" * 300, "current": 3, "total": 12},
+            {"current": 1, "total": 0},
+            {"current": "1"},
+            "not a section",
+            *({"current": n} for n in range(20)),
+        ]
+        query, params = build_task_progress_update(
+            {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, "current": 1, "sections": sections}, 0
+        )
+
+        assert "sections: $pg0_sections" in query
+        kept = params["pg0_sections"]
+        assert kept[0] == {"description": "x" * 200, "current": 3, "total": 12}
+        assert kept[1] == {"current": 1}
+        assert len(kept) == 8  # capped at ten entries before the two unusable ones are dropped
+
+    @pytest.mark.parametrize("sections", [None, "Days", [], [{"current": -1}]])
+    def test_missing_or_unusable_sections_are_left_out(self, sections):
+        query, params = build_task_progress_update(
+            {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, "current": 1, "sections": sections}, 0
+        )
+
+        assert "sections" not in query
+        assert "pg0_sections" not in params
+
     @pytest.mark.parametrize("total", [0, -1, "10", float("nan"), 10**400, 2**64])
     def test_invalid_total_keeps_the_count(self, total):
         query, params = build_task_progress_update(

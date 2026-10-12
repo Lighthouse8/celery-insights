@@ -313,7 +313,13 @@ async def test_progress_follows_latest_report_and_resets_on_new_attempt(
     job = await ingest(
         {"type": "task-sent", "uuid": "job", "timestamp": 1700000000.0, "name": "reports.cache"},
         {"type": "task-started", "uuid": "job", "timestamp": 1700000001.0},
-        progress(1700000003.0, current=4, total=10, description="Caching days"),
+        progress(
+            1700000003.0,
+            current=4,
+            total=10,
+            description="Caching days",
+            sections=[{"description": "Days", "current": 4, "total": 10}, {"current": 2}],
+        ),
         progress(1700000002.0, current=2, total=10),
         progress(1700000004.0, current="x"),
         {"type": "task-progress", "uuid": "unknown", "timestamp": 1700000004.0, "current": 1},
@@ -323,6 +329,7 @@ async def test_progress_follows_latest_report_and_resets_on_new_attempt(
         "current": 4,
         "total": 10,
         "description": "Caching days",
+        "sections": [{"description": "Days", "current": 4, "total": 10}, {"current": 2}],
         "updated_at": datetime.fromtimestamp(1700000003, tz=UTC),
     }
     assert await rows("SELECT * FROM task:unknown") == []

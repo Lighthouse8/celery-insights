@@ -268,7 +268,11 @@ describe("getLayoutKey", () => {
   const child = createTask({ id: "child", parent_id: "root", state: TaskState.STARTED })
 
   it("ignores progress and state, which never move a node", () => {
-    const reported = { ...child, state: TaskState.SUCCESS, progress: { current: 4, total: 10, updated_at: new Date() } }
+    const reported = {
+      ...child,
+      state: TaskState.SUCCESS,
+      progress: { current: 4, total: 10, updated_at: new Date(), sections: [] },
+    }
 
     expect(getLayoutKey([root, reported], "root")).toBe(getLayoutKey([root, child], "root"))
     expect(getLayoutKey([child, root], "root")).toBe(getLayoutKey([root, child], "root"))
@@ -404,11 +408,11 @@ describe("refreshNodeData expanded runs", () => {
       id: "resource",
       workflow_id: "nightly",
       state: TaskState.STARTED,
-      progress: { current: 2, total: 10, updated_at: new Date() },
+      progress: { current: 2, total: 10, sections: [], updated_at: new Date() },
     })
     const joinedRuns = { ids: ["resource"], total: 1, tasks: [resource], walked: ["resource"], cut: 0 }
     const { nodes } = getFlowGraph([root], "root", undefined, joinedRuns)
-    const advanced = { ...resource, progress: { current: 7, total: 10, updated_at: new Date() } }
+    const advanced = { ...resource, progress: { current: 7, total: 10, sections: [], updated_at: new Date() } }
 
     expect(getLayoutKey([root], "root", { ...joinedRuns, tasks: [advanced] })).toBe(
       getLayoutKey([root], "root", joinedRuns),

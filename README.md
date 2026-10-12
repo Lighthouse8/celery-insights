@@ -39,7 +39,7 @@ Keep the rest of the event-related settings at their Celery defaults unless your
 
 ## Task Progress
 
-Running tasks can report progress with a custom event. Celery Insights shows the latest report on the task page and in the workflow graph.
+Running tasks can report progress with a custom event. With the experimental **Task progress** setting turned on (it is off by default), Celery Insights shows the latest report in a Progress box on the task page and in the workflow graph.
 
 ```python
 self.send_event(
@@ -47,7 +47,7 @@ self.send_event(
 )
 ```
 
-`current` is required; `total`, `description` and `attempt` (the task's retry count, which keeps retries on different workers in order) are optional. Throttle the event in tight loops, for example to one event every few seconds. A finished task keeps its last report. See the [Celery clusters guide](src/content/docs/celery-clusters.mdx#task-progress) for details.
+`current` is required; `total`, `description`, `sections` (one `{"description", "current", "total"}` entry per nested loop, outermost first) and `attempt` (the task's retry count, which keeps retries on different workers in order) are optional. Throttle the event in tight loops, for example to one event every few seconds. A finished task keeps its last report. See the [Celery clusters guide](src/content/docs/celery-clusters.mdx#task-progress) for details.
 
 ## Common Deployment Changes
 
