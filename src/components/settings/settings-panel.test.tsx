@@ -45,6 +45,15 @@ describe("SettingsPanel", () => {
     expect(useSettingsStore.getState().hideWelcomeBanner).toBe(true)
   })
 
+  it("lists experimental settings after the others", () => {
+    render(<SettingsPanel />)
+    const tour = screen.getByRole("button", { name: /start tour/i })
+
+    for (const badge of screen.getAllByText("Experimental")) {
+      expect(tour.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+  })
+
   it("resets browser defaults", async () => {
     const user = userEvent.setup()
     useSettingsStore.setState({

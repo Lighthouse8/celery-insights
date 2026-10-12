@@ -87,6 +87,15 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
           }
         />
         <SettingRow
+          title="Product tour"
+          description="Start the guided walkthrough again."
+          control={
+            <Button variant="outline" size="sm" onClick={() => startTour()}>
+              Start tour
+            </Button>
+          }
+        />
+        <SettingRow
           title={
             <span className="flex items-center gap-2">
               Task node labels <Badge variant="outline">Experimental</Badge>
@@ -123,15 +132,6 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
               aria-invalid={invalidFields.length > 0}
               onChange={(event) => useSettingsStore.setState({ taskNodeFields: event.target.value })}
             />
-          }
-        />
-        <SettingRow
-          title="Product tour"
-          description="Start the guided walkthrough again."
-          control={
-            <Button variant="outline" size="sm" onClick={() => startTour()}>
-              Start tour
-            </Button>
           }
         />
       </div>
