@@ -10,9 +10,11 @@ describe("joinedRunsQuery", () => {
   const { statements, fields } = joinedRunsQuery()
   const statement = (name: string) => statements.find((candidate) => candidate.startsWith(`LET $${name} =`)) ?? ""
 
-  it("reads at most MAX_LINKING_MEMBERS members' links, unordered so the scan stops there", () => {
-    expect(statement("links")).toContain(` LIMIT ${MAX_LINKING_MEMBERS} `)
-    expect(statement("links")).not.toContain("ORDER BY")
+  it("takes at most MAX_LINKING_MEMBERS members' links, unordered so the scan stops there, and flags more", () => {
+    expect(statement("linkRows")).toContain(` LIMIT ${MAX_LINKING_MEMBERS + 1} `)
+    expect(statement("linkRows")).not.toContain("ORDER BY")
+    expect(statement("links")).toBe(`LET $links = array::slice($linkRows,0,${MAX_LINKING_MEMBERS})`)
+    expect(fields).toContain(`membersCut:array::len($linkRows) > ${MAX_LINKING_MEMBERS}`)
   })
 
   it("chooses the first MAX_JOINED_RUNS non-member joined ids", () => {
