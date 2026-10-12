@@ -103,7 +103,11 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
           }
         />
         <SettingRow
-          title="Task node fields"
+          title={
+            <span className="flex items-center gap-2">
+              Task node fields <Badge variant="outline">Experimental</Badge>
+            </span>
+          }
           description="Comma-separated fields for task node labels: a task attribute (type, worker, routing_key), kwargs.<name>, or args.<index>. Add :alias to rename a field in its label."
           helper={
             invalidFields.length
