@@ -75,14 +75,14 @@ describe("useTaskWorkflow", () => {
               task: { id: "task:root", workflow_id: "root", joined_tasks: ["other"] },
               workflow: null,
               members: [{ id: "task:root", workflow_id: "root", joined_tasks: ["other"] }],
-              joined: [{ id: "task:other", workflow_id: "other" }],
+              expanded: [{ id: "task:other", workflow_id: "other" }],
               joinedIds: ["other"],
               joinedTotal: 1,
             },
           ],
     )
     const { result } = renderHook(() => useTaskWorkflow("root"))
-    await waitFor(() => expect(result.current.joined).toHaveLength(1))
+    await waitFor(() => expect(result.current.expanded).toHaveLength(1))
     expect(result.current.members.map((member) => member.id)).toEqual(["task:root"])
 
     act(() => emit({ value: { id: "task:other", workflow_id: "other" } }))
@@ -104,7 +104,7 @@ describe("useTaskWorkflow", () => {
               workflow: null,
               // The member that joined "later" is older than the members the read returns.
               members: [{ id: "task:root", workflow_id: "root" }],
-              joined: [],
+              expanded: [],
               joinedIds: ["later"],
               joinedTotal: 1,
             },
@@ -114,6 +114,37 @@ describe("useTaskWorkflow", () => {
     await waitFor(() => expect(mockLiveOf).toHaveBeenCalled())
 
     act(() => emit({ value: { id: "task:later", workflow_id: "other" } }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(snapshotCalls()).toBe(2)
+  })
+
+  it("refreshes when a task inside an expanded joined run changes", async () => {
+    mockQuery.mockImplementation(async (query: string) =>
+      query.startsWith("LIVE")
+        ? ["live-uuid"]
+        : [
+            null,
+            null,
+            {
+              task: { id: "task:root", workflow_id: "root", joined_tasks: ["other"] },
+              workflow: null,
+              members: [{ id: "task:root", workflow_id: "root", joined_tasks: ["other"] }],
+              expanded: [
+                { id: "task:other", workflow_id: "other", children: ["other-child"] },
+                { id: "task:other-child", workflow_id: "other", parent_id: "other" },
+              ],
+              joinedIds: ["other"],
+              joinedTotal: 1,
+              expansionCut: 0,
+            },
+          ],
+    )
+    renderHook(() => useTaskWorkflow("root"))
+    await waitFor(() => expect(mockLiveOf).toHaveBeenCalled())
+
+    act(() => emit({ value: { id: "task:other-child", workflow_id: "other", parent_id: "other" } }))
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000)
     })

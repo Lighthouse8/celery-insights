@@ -75,6 +75,8 @@ export const getFlowGraph = (
   edges: Edge[]
   /** Joined runs the task-workflow read left out by the MAX_JOINED_RUNS bound. */
   hiddenJoinedRuns: number
+  /** Links out of expanded tasks the read left unexpanded by its MAX_EXPANDED_TASKS and depth bounds. */
+  hiddenJoinedBranches: number
   /** Dashed edges to drawn nodes left out by the MAX_JOINED_RUNS edge bound. */
   hiddenJoinLinks: number
 } => {
@@ -119,55 +121,107 @@ export const getFlowGraph = (
   }
 
   // Joined runs belong to other workflows: drawn after the tree, never part of it. The task-workflow read chooses
-  // which (joinedRuns.ids); the graph draws exactly those, with at most MAX_JOINED_RUNS dashed edges.
+  // which (joinedRuns.ids) and expands each into its subtree; the graph draws those, each subtree under its run,
+  // with at most MAX_JOINED_RUNS dashed edges.
   let hiddenJoinLinks = 0
   const addJoinedRuns = () => {
-    const loaded = new Map(joinedRuns.tasks.map((task) => [task.id, task]))
+    const expanded = new Map(joinedRuns.tasks.map((task) => [task.id, task]))
+    const expandedChildMap = getChildMap(joinedRuns.tasks)
     const nodeIds = new Set(nodes.map((node) => node.id))
-    const joinedNodes = new Map<string, Node>()
-    for (const joinedId of joinedRuns.ids) {
-      if (visited.has(joinedId) || joinedNodes.has(joinedId)) continue
-      // A member's own id may already look like a joined node id ("joined:<id>"); prefix again until it's free.
-      let nodeId = JOINED_NODE_PREFIX + joinedId
+    const joinedNodeIds = new Map<string, string>()
+    // A member's own id may already look like a joined node id ("joined:<id>"); prefix again until it's free.
+    const joinedNodeId = (taskId: string) => {
+      let nodeId = joinedNodeIds.get(taskId)
+      if (nodeId) return nodeId
+      nodeId = JOINED_NODE_PREFIX + taskId
       while (nodeIds.has(nodeId)) nodeId = JOINED_NODE_PREFIX + nodeId
       nodeIds.add(nodeId)
-      joinedNodes.set(joinedId, {
-        id: nodeId,
-        type: "joinedTaskNode",
-        position: { x: 0, y: 0 },
-        // A run that couldn't be loaded (never recorded, deleted, or not readable) stays a placeholder.
-        data: { taskId: joinedId, task: loaded.get(joinedId) },
-        connectable: false,
-        deletable: false,
-      })
+      joinedNodeIds.set(taskId, nodeId)
+      return nodeId
     }
-    // Joined nodes take rows below the tree in the order their first edge reaches them.
-    const placed = new Set<Node>()
-    const place = (joinedNode: Node, x: number) => {
-      if (placed.has(joinedNode)) return
-      joinedNode.position = { x, y: nextLeafRow++ * ROW_HEIGHT }
-      placed.add(joinedNode)
-    }
+    const chosen = joinedRuns.ids.filter((taskId) => !visited.has(taskId))
+    for (const taskId of chosen) joinedNodeId(taskId)
+
+    // Joined runs to lay out, each from the column after the first task whose dashed edge reaches it.
+    const queue: Array<{ taskId: string; column: number }> = []
+    const queued = new Set<string>()
+    const placed = new Set<string>()
     let edgeBudget = MAX_JOINED_RUNS
-    for (const node of nodes) {
-      const task = node.data as unknown as Task
-      // A "-replaced" duplicate shares its task; only the task's own node draws the joins.
-      if (node.id !== task.id) continue
+    const drawJoins = (task: Task, sourceId: string, column: number, isTarget: (taskId: string) => boolean) => {
       for (const joinedId of task.joined_tasks ?? []) {
-        const joinedNode = joinedNodes.get(joinedId)
-        if (!joinedNode && !visited.has(joinedId)) continue
+        if (!isTarget(joinedId)) continue
         if (!edgeBudget) {
           hiddenJoinLinks++
           continue
         }
         edgeBudget--
-        if (joinedNode) place(joinedNode, node.position.x + COLUMN_WIDTH)
-        edges.push(createJoinedEdge(task.id, joinedNode?.id ?? joinedId))
+        if (visited.has(joinedId)) {
+          edges.push(createJoinedEdge(sourceId, joinedId))
+          continue
+        }
+        if (!queued.has(joinedId)) {
+          queued.add(joinedId)
+          queue.push({ taskId: joinedId, column: column + 1 })
+        }
+        edges.push(createJoinedEdge(sourceId, joinedNodeId(joinedId)))
       }
     }
+
+    const chosenSet = new Set(chosen)
+    for (const node of nodes) {
+      const task = node.data as unknown as Task
+      // A "-replaced" duplicate shares its task; only the task's own node draws the joins.
+      if (node.id !== task.id) continue
+      drawJoins(task, task.id, node.position.x / COLUMN_WIDTH, (taskId) => visited.has(taskId) || chosenSet.has(taskId))
+    }
     // A chosen run with no drawn edge (say, its joiner is older than the members the graph has) still gets a node.
-    for (const joinedNode of joinedNodes.values()) place(joinedNode, nodes[0].position.x + COLUMN_WIDTH)
-    nodes.push(...placed)
+    for (const taskId of chosen)
+      if (!queued.has(taskId)) {
+        queued.add(taskId)
+        queue.push({ taskId, column: (nodes[0]?.position.x ?? 0) / COLUMN_WIDTH + 1 })
+      }
+
+    // The joined run's root keeps the joined-run look; its descendants are ordinary task nodes.
+    const visitExpanded = (taskId: string, column: number, isRoot: boolean): number => {
+      placed.add(taskId)
+      const task = expanded.get(taskId)
+      const nodeId = joinedNodeId(taskId)
+      const node: Node =
+        isRoot || !task
+          ? {
+              id: nodeId,
+              type: "joinedTaskNode",
+              position: { x: column * COLUMN_WIDTH, y: 0 },
+              // A run that couldn't be loaded (never recorded, deleted, or not readable) stays a placeholder.
+              data: { taskId, task },
+              connectable: false,
+              deletable: false,
+            }
+          : createNode(task, column, 0, nodeId)
+      nodes.push(node)
+      if (task) drawJoins(task, nodeId, column, () => true)
+      // Like the workflow tree: children by parent_id, plus listed children whose parent wasn't expanded.
+      const children = !task
+        ? []
+        : [
+            ...(expandedChildMap.get(taskId) ?? []),
+            ...task.children.flatMap((childId) => {
+              const child = expanded.get(childId)
+              return child && !(child.parent_id && expanded.has(child.parent_id)) ? [child] : []
+            }),
+          ].sort((a, b) => a.id.localeCompare(b.id))
+      const childRows: number[] = []
+      for (const child of children) {
+        if (placed.has(child.id) || visited.has(child.id)) continue
+        edges.push(createEdge(nodeId, joinedNodeId(child.id)))
+        childRows.push(visitExpanded(child.id, column + 1, false))
+      }
+      const row = childRows.length ? (childRows[0] + childRows[childRows.length - 1]) / 2 : nextLeafRow++
+      node.position.y = row * ROW_HEIGHT
+      return row
+    }
+    for (let index = 0; index < queue.length; index++)
+      if (!placed.has(queue[index].taskId)) visitExpanded(queue[index].taskId, queue[index].column, true)
   }
 
   const rootTask = taskMap.get(rootTaskId)
@@ -182,34 +236,36 @@ export const getFlowGraph = (
     nodes: nodes,
     edges: edges,
     hiddenJoinedRuns: joinedRuns.total - joinedRuns.ids.length,
+    hiddenJoinedBranches: joinedRuns.cut,
     hiddenJoinLinks,
   }
 }
 
 /**
  * Node positions and edges depend only on each task's parent, its stored children (which can adopt a
- * parentless child), the runs it joined, and which joined runs the read chose (and how many it left out) and
- * loaded, so a progress report or state change can update node data without re-laying out the graph.
+ * parentless child) and the runs it joined, for members and expanded joined-run tasks alike, plus which joined
+ * runs the read chose and what it left out, so a progress report or state change can update node data without
+ * re-laying out the graph.
  */
+const taskLinks = (tasks: Task[]) =>
+  tasks
+    .map(
+      (task) =>
+        `${task.id}<${task.parent_id ?? ""}>${[...task.children].sort().join(",")}~>${(task.joined_tasks ?? []).join(",")}`,
+    )
+    .sort()
+
 export const getLayoutKey = (tasks: Task[], rootTaskId: string, joinedRuns: JoinedRuns = NO_JOINED_RUNS): string =>
   [
     rootTaskId,
     // Joined runs keep their reported order: it decides the rows their nodes take.
-    ...tasks
-      .map(
-        (task) =>
-          `${task.id}<${task.parent_id ?? ""}>${[...task.children].sort().join(",")}~>${(task.joined_tasks ?? []).join(",")}`,
-      )
-      .sort(),
+    ...taskLinks(tasks),
     // The chosen ids keep the read's order: it decides which joined node ids and rows they take.
-    `joined:${joinedRuns.ids.join(",")}/${joinedRuns.total}`,
-    `loaded:${joinedRuns.tasks
-      .map((task) => task.id)
-      .sort()
-      .join(",")}`,
+    `joined:${joinedRuns.ids.join(",")}/${joinedRuns.total}/${joinedRuns.cut}`,
+    ...taskLinks(joinedRuns.tasks).map((links) => `expanded:${links}`),
   ].join("|")
 
-/** Swap in each node's latest task, and each joined node's latest joined run, without moving it. */
+/** Swap in each node's latest task, and each joined-run node's latest record, without moving it. */
 export const refreshNodeData = (nodes: Node[], tasks: Task[], joinedTasks: Task[] = []): Node[] => {
   const tasksById = new Map(tasks.map((task) => [task.id, task]))
   const joinedById = new Map(joinedTasks.map((task) => [task.id, task]))
@@ -219,18 +275,22 @@ export const refreshNodeData = (nodes: Node[], tasks: Task[], joinedTasks: Task[
       const task = joinedById.get(data.taskId)
       return task && task !== data.task ? { ...node, data: { ...data, task } } : node
     }
-    // Duplicated nodes get a "-replaced" id but keep their task in data.
-    const task = tasksById.get((node.data as unknown as Task).id)
+    // Duplicated nodes get a "-replaced" id and expanded joined-run tasks a "joined:" id; both keep their task in data.
+    const taskId = (node.data as unknown as Task).id
+    const task = tasksById.get(taskId) ?? joinedById.get(taskId)
     return task && task !== (node.data as unknown) ? { ...node, data: task as Task & Record<string, unknown> } : node
   })
 }
 
-export const hiddenJoinsNote = (runs: number, links: number): string | undefined => {
+const listFormat = new Intl.ListFormat("en", { type: "conjunction" })
+
+export const hiddenJoinsNote = (runs: number, links: number, branches = 0): string | undefined => {
   const parts = [
     runs && `${runs} more joined run${runs === 1 ? "" : "s"}`,
     links && `${links} join link${links === 1 ? "" : "s"}`,
-  ].filter(Boolean)
-  return parts.length ? `${parts.join(" and ")} not shown` : undefined
+    branches && `${branches} joined-run branch${branches === 1 ? "" : "es"}`,
+  ].filter((part): part is string => !!part)
+  return parts.length ? `${listFormat.format(parts)} not shown` : undefined
 }
 
 const FOCUS_ZOOM = 1
@@ -288,7 +348,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
     const graph = getFlowGraph(tasks, rootTaskId, undefined, joinedRuns)
     setNodes(graph.nodes)
     setEdges(graph.edges)
-    setJoinsNote(hiddenJoinsNote(graph.hiddenJoinedRuns, graph.hiddenJoinLinks))
+    setJoinsNote(hiddenJoinsNote(graph.hiddenJoinedRuns, graph.hiddenJoinLinks, graph.hiddenJoinedBranches))
     if (!isInitialized && currentTaskId) {
       const node = graph.nodes.find((node) => node.id === currentTaskId)
       if (node)

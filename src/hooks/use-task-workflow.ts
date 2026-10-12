@@ -1,18 +1,20 @@
 import { queryObservation, isObservationRefresh } from "@lib/observation-query"
 import { useSurrealDB } from "@components/surrealdb-provider"
-import { MAX_JOINED_RUNS } from "@lib/joined-runs"
+import { joinedRunsQuery } from "@lib/joined-runs"
 import { extractId, type SurrealTask, type SurrealWorkflow } from "@/types/surreal-records"
 import type { LiveSubscription, Uuid } from "surrealdb"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 interface TaskWorkflowSnapshot {
   members: SurrealTask[]
-  /** Runs the members joined; they belong to other workflows and are not members. Only the loadable ones. */
-  joined: SurrealTask[]
-  /** The joined run ids the read chose (see JoinedRuns), whether or not their records loaded. */
+  /** The joined runs the read chose and their expanded descendants (see JoinedRuns); never members. */
+  expanded: SurrealTask[]
+  /** The joined run ids the read chose, whether or not their records loaded. */
   joinedIds: string[]
   /** Every joined run id, before the MAX_JOINED_RUNS cap. */
   joinedTotal: number
+  /** Links out of the expanded tasks the read's bounds left unexpanded. */
+  expansionCut: number
   task: SurrealTask | null
   workflow: SurrealWorkflow | null
 }
@@ -22,6 +24,8 @@ interface UseTaskWorkflowResult extends TaskWorkflowSnapshot {
   isLoading: boolean
 }
 
+const joinedQuery = joinedRunsQuery()
+
 // One observation refresh notifies every STARTED member at once; read the workflow once per burst.
 const REFRESH_COALESCE_MS = 250
 
@@ -29,9 +33,10 @@ const EMPTY_RESULT: TaskWorkflowSnapshot = {
   task: null,
   workflow: null,
   members: [],
-  joined: [],
+  expanded: [],
   joinedIds: [],
   joinedTotal: 0,
+  expansionCut: 0,
 }
 
 export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
@@ -57,29 +62,23 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
       const results = await queryObservation<
         Array<null | {
           members?: SurrealTask[]
-          joined?: SurrealTask[]
+          expanded?: SurrealTask[]
           joinedIds?: string[]
           joinedTotal?: number
+          expansionCut?: number
           task?: SurrealTask | null
           workflow?: SurrealWorkflow | null
         }>
       >(
         db,
         { operation: "task-workflow", taskId },
-        `LET $task = (SELECT * FROM type::record('task', $taskId))[0];
-                 LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId;
-                 LET $members = SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC;
-                 LET $links = SELECT record::id(id) AS task_id, joined_tasks FROM task WHERE workflow_id = $workflowId;
-                 LET $joinedCandidates = array::sort(array::complement(array::distinct(array::filter(array::flatten($links.joined_tasks), |$id| $id != NONE)), $links.task_id));
-                 LET $joinedIds = array::slice($joinedCandidates, 0, ${MAX_JOINED_RUNS});
-                 RETURN {
-                    task: $task,
-                    workflow: (SELECT * FROM type::record('workflow', $workflowId))[0],
-                    members: $members,
-                    joinedIds: $joinedIds,
-                    joinedTotal: array::len($joinedCandidates),
-                    joined: array::filter(array::map($joinedIds, |$id| (SELECT * FROM type::record('task', $id))[0]), |$joined| $joined != NONE)
-                };`,
+        [
+          "LET $task = (SELECT * FROM type::record('task', $taskId))[0]",
+          "LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId",
+          "LET $members = SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC",
+          ...joinedQuery.statements,
+          `RETURN {task: $task, workflow: (SELECT * FROM type::record('workflow', $workflowId))[0], members: $members, ${joinedQuery.fields}};`,
+        ].join(";"),
         { taskId },
       )
       if (request !== requestRef.current) return
@@ -89,13 +88,15 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         task: result?.task ?? null,
         workflow: result?.workflow ?? null,
         members: Array.isArray(result?.members) ? result.members : [],
-        joined: Array.isArray(result?.joined) ? result.joined : [],
+        expanded: Array.isArray(result?.expanded) ? result.expanded : [],
         joinedIds: Array.isArray(result?.joinedIds) ? result.joinedIds : [],
         joinedTotal: result?.joinedTotal ?? 0,
+        expansionCut: result?.expansionCut ?? 0,
       }
       workflowIdRef.current = next.task?.workflow_id || next.task?.root_id || next.task?.id?.toString() || taskId
-      // The ids the read chose, not the records it found: a run that has no row yet must refresh when it gets one.
-      joinedIdsRef.current = new Set(next.joinedIds)
+      // The ids the read chose, not only the records it found: a run with no row yet must refresh when it gets one.
+      // Any expanded task's change refreshes too, as its node shows its state and progress.
+      joinedIdsRef.current = new Set([...next.joinedIds, ...next.expanded.map((task) => extractId(task.id))])
       setData(next)
       setError(null)
     } catch (err) {

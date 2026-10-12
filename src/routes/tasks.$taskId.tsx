@@ -136,9 +136,10 @@ const TaskPage = () => {
     task: surrealTask,
     workflow: surrealWorkflow,
     members,
-    joined,
+    expanded,
     joinedIds,
     joinedTotal,
+    expansionCut,
     isLoading,
     error,
   } = useTaskWorkflow(taskId)
@@ -146,8 +147,8 @@ const TaskPage = () => {
   const workflow = useMemo(() => (surrealWorkflow ? parseWorkflow(surrealWorkflow) : undefined), [surrealWorkflow])
   const parsedMembers = useMemo(() => members.map(parseTask), [members])
   const joinedRuns = useMemo(
-    () => ({ ids: joinedIds, total: joinedTotal, tasks: joined.map(parseTask) }),
-    [joined, joinedIds, joinedTotal],
+    () => ({ ids: joinedIds, total: joinedTotal, tasks: expanded.map(parseTask), cut: expansionCut }),
+    [expanded, joinedIds, joinedTotal, expansionCut],
   )
   const [chartType, setChartType] = React.useState<WorkflowChartType>(WorkflowChartType.FLOWCHART)
   useTourChangeStepOnLoad(2, task !== undefined)
