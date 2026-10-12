@@ -1,5 +1,57 @@
+import { render, waitFor } from "@test-utils"
 import { createTask } from "@test-fixtures"
-import { flowGrid, getFlowGraph, labelledBounds, respaceNodes } from "./flow-chart"
+import { ReactFlowProvider } from "@xyflow/react"
+import { createElement } from "react"
+import FlowChart, { flowGrid, getFlowGraph, labelledBounds, respaceNodes } from "./flow-chart"
+
+const { fitBounds } = vi.hoisted(() => ({ fitBounds: vi.fn() }))
+
+vi.mock("@xyflow/react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@xyflow/react")>()
+  const { useMemo } = await import("react")
+  return {
+    ...actual,
+    useReactFlow: () => {
+      const flow = actual.useReactFlow()
+      return useMemo(() => ({ ...flow, fitBounds }), [flow])
+    },
+  }
+})
+
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children }: { children?: React.ReactNode }) => children,
+}))
+
+describe("FlowChart", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it("fits the graph on mount once React Flow has measured the nodes", async () => {
+    // happy-dom lays nothing out: report every observed node as a 60px avatar.
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(60)
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(60)
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(target: Element) {
+          const entry = { target, contentRect: target.getBoundingClientRect() } as ResizeObserverEntry
+          queueMicrotask(() => this.callback([entry], this as unknown as ResizeObserver))
+        }
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+    const tasks = [createTask({ id: "root" }), createTask({ id: "child", parent_id: "root" })]
+
+    render(createElement(ReactFlowProvider, null, createElement(FlowChart, { tasks, rootTaskId: "root" })))
+
+    await waitFor(() => expect(fitBounds).toHaveBeenCalledTimes(1))
+    expect(fitBounds.mock.calls[0][0]).toEqual({ x: 0, y: 0, width: 240, height: 60 })
+  })
+})
 
 describe("getFlowGraph", () => {
   it("keeps nested channel and resource branches in separate rows", () => {

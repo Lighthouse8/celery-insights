@@ -21,6 +21,7 @@ import {
   ReactFlow,
   type Rect,
   useEdgesState,
+  useNodesInitialized,
   useNodesState,
   useReactFlow,
   type XYPosition,
@@ -209,14 +210,21 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
     [flow, nodes],
   )
 
+  // Bounds need measured nodes, and on mount the store has none yet: hold the fit until React Flow measures them.
+  const nodesInitialized = useNodesInitialized()
+  const fitPending = useRef(false)
   const fitView = useCallback(() => {
-    const graphNodes = flow.getNodes()
-    if (graphNodes.length)
-      flow.fitBounds(labelledBounds(flow.getNodesBounds(graphNodes), visible.length), {
+    fitPending.current = !nodesInitialized
+    if (nodesInitialized)
+      flow.fitBounds(labelledBounds(flow.getNodesBounds(flow.getNodes()), visible.length), {
         duration: ZOOM_ANIMATION_SPEED,
         padding: 0.1,
       })
-  }, [flow, visible.length])
+  }, [flow, nodesInitialized, visible.length])
+
+  useEffect(() => {
+    if (nodesInitialized && fitPending.current) fitView()
+  }, [nodesInitialized, fitView])
 
   useEffect(() => {
     const graph = getFlowGraph(tasks, rootTaskId, undefined, gridRef.current)
