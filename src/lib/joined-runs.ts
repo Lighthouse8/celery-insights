@@ -21,8 +21,15 @@ export interface JoinedRuns {
 
 export const NO_JOINED_RUNS: JoinedRuns = { ids: [], total: 0, tasks: [], cut: 0 }
 
+/**
+ * What an expanded task's node and the walk need. Never payloads: up to MAX_EXPANDED_TASKS full records could
+ * exceed the observation response limit.
+ */
+export const EXPANDED_TASK_FIELDS =
+  "id,type,state,workflow_id,root_id,parent_id,children,joined_tasks,last_updated,execution_active,execution_observed_at"
+
 const lookup = (ids: string) =>
-  `array::filter(array::map(${ids},|$id| (SELECT * FROM type::record('task',$id) TIMEOUT 2s)[0]),|$found| $found != NONE)`
+  `array::filter(array::map(${ids},|$id| (SELECT ${EXPANDED_TASK_FIELDS} FROM type::record('task',$id) TIMEOUT 2s)[0]),|$found| $found != NONE)`
 const linksOf = (records: string, seen: string) =>
   `array::sort(array::complement(array::distinct(array::filter(array::flatten(array::concat(${records}.children,${records}.joined_tasks)),|$id| $id != NONE)),array::concat(${seen},$links.task_id)))`
 

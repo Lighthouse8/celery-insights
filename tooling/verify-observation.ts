@@ -280,13 +280,12 @@ try {
     ["task:hidden"],
     "unknown joined runs are omitted",
   )
-  assert.equal(allJoined[0].result, "hidden-result")
+  assert.equal(allJoined[0].state, "SUCCESS")
   const payloadJoined = await joinedRuns(scopedDatabase(root, { deny_fields: ["task.result.read"] }))
   assert.deepEqual(
     payloadJoined.map((task) => String(task.id)),
     ["task:hidden"],
   )
-  assert.equal(payloadJoined[0].result, undefined)
   assert.deepEqual(await joinedRuns(scoped), [], "task scopes hide joined runs like other relationships")
   assert.deepEqual((await readWorkflow(scoped)).joinedIds, [])
   const ghosted = await readWorkflow(root)
@@ -345,14 +344,29 @@ try {
   assert.equal(subtree.expansionCut, 0)
   const restrictedSubtree = await readWorkflow(scopedDatabase(root, { deny_fields: ["task.result.read"] }))
   assert.deepEqual(expandedIds(restrictedSubtree), expandedIds(subtree))
-  const restrictedResource = restrictedSubtree.expanded.find((task) => String(task.id) === "task:resource")
-  assert.equal(restrictedResource?.result, undefined)
-  assert.deepEqual(restrictedResource?.restricted_fields, ["task.result.read"])
   const rowScopedSubtree = await readWorkflow(
     scopedDatabase(root, { task_ids: ["sample", "resource"], deny_fields: [] }),
   )
   assert.deepEqual([rowScopedSubtree.joinedIds, rowScopedSubtree.expanded], [[], []])
   await root.query("DELETE task WHERE workflow_id IN ['nightly', 'nested']")
+  // Expanded tasks carry only what their nodes need, never payloads: 200 tasks with 100 KiB results would
+  // otherwise make a 20 MiB response, over the 16 MiB observation limit.
+  await root.query(
+    `CREATE task:heavy SET state = 'SUCCESS', workflow_id = 'heavy', children = $heavyChildren, result = $payload, last_updated = time::now();
+    FOR $child IN $heavyChildren { CREATE type::record('task', $child) SET state = 'SUCCESS', workflow_id = $child, parent_id = 'heavy', result = $payload, args = $payload, last_updated = time::now(); };
+    UPDATE task:sample SET joined_tasks = ['heavy'];`,
+    {
+      heavyChildren: Array.from({ length: 200 }, (_, index) => `heavy_${index}`),
+      payload: "x".repeat(100 * 1024),
+    },
+  )
+  const heavy = await readWorkflow(root)
+  assert.equal(heavy.expanded.length, 201)
+  for (const task of heavy.expanded)
+    for (const field of ["result", "args", "kwargs", "exception", "traceback"])
+      assert.equal(task[field], undefined, `${field} is not read for an expanded task`)
+  assert(JSON.stringify(heavy).length < 1024 * 1024, "expanded runs stay far below the response limit")
+  await root.query("DELETE task WHERE string::starts_with(workflow_id, 'heavy')")
   // Bounds: at most MAX_EXPANDED_TASKS reads, MAX_EXPANSION_DEPTH levels below a run; the rest counts as cut.
   // (The wide children get their own workflow ids: SurrealDB 3.3.0 inserts thousands of equal index values slowly.)
   await root.query(
