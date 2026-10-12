@@ -246,9 +246,10 @@ function compileRead(input: ReadRequest): { sql: string; bindings: Record<string
     }
   if (p.operation === "task-workflow")
     // Joined runs (task-joined events) belong to other workflows. Each is read by id through type::record,
-    // so a restricted scope applies to it as it does to the task itself. The ids match joinedRunIds.
+    // so a restricted scope applies to it as it does to the task itself. The ids match joinedRunIds over every
+    // member, not just the members this read returns, as the graph's member list is longer.
     return {
-      sql: `LET $task = (SELECT * FROM type::record('task',$taskId) TIMEOUT 2s)[0];LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId;LET $members = SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC LIMIT 1000 TIMEOUT 2s;LET $joinedIds = array::slice(array::sort(array::complement(array::distinct(array::filter(array::flatten($members.joined_tasks),|$id| $id != NONE)),array::map($members,|$member| record::id($member.id)))),0,${MAX_JOINED_RUNS});RETURN {task:$task,workflow:(SELECT * FROM type::record('workflow',$workflowId) TIMEOUT 2s)[0],members:$members,joined:array::filter(array::map($joinedIds,|$id| (SELECT * FROM type::record('task',$id) TIMEOUT 2s)[0]),|$joined| $joined != NONE)};`,
+      sql: `LET $task = (SELECT * FROM type::record('task',$taskId) TIMEOUT 2s)[0];LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId;LET $members = SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC LIMIT 1000 TIMEOUT 2s;LET $joinedCandidates = array::distinct(array::flatten(SELECT VALUE joined_tasks FROM task WHERE workflow_id = $workflowId AND joined_tasks != NONE TIMEOUT 2s));LET $joinedIds = array::slice(array::sort(array::complement($joinedCandidates,SELECT VALUE record::id(id) FROM task WHERE workflow_id = $workflowId AND record::id(id) IN $joinedCandidates TIMEOUT 2s)),0,${MAX_JOINED_RUNS});RETURN {task:$task,workflow:(SELECT * FROM type::record('workflow',$workflowId) TIMEOUT 2s)[0],members:$members,joined:array::filter(array::map($joinedIds,|$id| (SELECT * FROM type::record('task',$id) TIMEOUT 2s)[0]),|$joined| $joined != NONE)};`,
       bindings,
     }
   if (p.operation === "home")
