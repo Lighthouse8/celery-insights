@@ -5,7 +5,7 @@ import type { Task } from "@/types/surreal-records"
 import { type JoinedRuns, MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
 import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
 import { toSvg } from "html-to-image"
-import React, { useCallback, useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Background,
   ControlButton,
@@ -20,6 +20,8 @@ import {
   useEdgesState,
   useNodesState,
   useReactFlow,
+  useStore,
+  type Viewport,
   type XYPosition,
 } from "@xyflow/react"
 
@@ -79,6 +81,8 @@ export const getFlowGraph = (
   hiddenJoinedBranches: number
   /** Dashed edges to drawn nodes left out by the MAX_JOINED_RUNS edge bound. */
   hiddenJoinLinks: number
+  /** For each member node, the joined-run nodes laid out in its subtree: what focusing on it frames. */
+  joinedBelow: Map<string, string[]>
 } => {
   const nodes: Node[] = []
   const edges: Edge[] = []
@@ -89,10 +93,99 @@ export const getFlowGraph = (
   const claimed = new Set<string>([rootTaskId])
   let nextLeafRow = 0
 
-  const visitTask = (task: Task, column: number): number => {
+  // Joined runs belong to other workflows, never to the tree's members, but are laid out in it: each drawn joined
+  // run (chosen by the task-workflow read, then expanded into its subtree) is an extra child of the first drawn
+  // task that joined it, under a dashed entry edge.
+  const expanded = new Map(joinedRuns.tasks.map((task) => [task.id, task]))
+  const expandedChildMap = getChildMap(joinedRuns.tasks)
+  const chosen = new Set(joinedRuns.ids.filter((taskId) => !taskMap.has(taskId)))
+  const walked = new Set([...joinedRuns.ids, ...joinedRuns.walked])
+  // A joined run keeps its joined-run look however the layout reaches it, even as another run's child.
+  const joinTargets = new Set(
+    [...tasks, ...joinedRuns.tasks].flatMap((task) => task.joined_tasks ?? []).concat(joinedRuns.ids),
+  )
+  // Every id a member node may take, so a joined node id never collides with one laid out later.
+  const nodeIds = new Set(tasks.flatMap((task) => [task.id, task.id + "-replaced"]))
+  const joinedNodeIds = new Map<string, string>()
+  // A member's own id may already look like a joined node id ("joined:<id>"); prefix again until it's free.
+  const joinedNodeId = (taskId: string) => {
+    let nodeId = joinedNodeIds.get(taskId)
+    if (nodeId) return nodeId
+    nodeId = JOINED_NODE_PREFIX + taskId
+    while (nodeIds.has(nodeId)) nodeId = JOINED_NODE_PREFIX + nodeId
+    nodeIds.add(nodeId)
+    joinedNodeIds.set(taskId, nodeId)
+    return nodeId
+  }
+  const placed = new Set<string>()
+  const layoutParents = new Map<string, string>()
+  // Drawn tasks in layout order, for the dashed edges once every node is placed.
+  const joiners: Array<{ nodeId: string; task: Task }> = []
+
+  // The joined runs a drawn task brings into the layout: ones the read chose (for a member) or the walk reached
+  // (for an expanded task), not yet placed, and not a child of another expanded task, which places it instead.
+  const joinedChildren = (task: Task, isExpanded: boolean): string[] =>
+    (task.joined_tasks ?? []).filter((joinedId) => {
+      if (taskMap.has(joinedId) || placed.has(joinedId)) return false
+      if (!(isExpanded ? walked.has(joinedId) : chosen.has(joinedId))) return false
+      const parentId = expanded.get(joinedId)?.parent_id
+      if (parentId && parentId !== joinedId && expanded.has(parentId)) return false
+      placed.add(joinedId)
+      return true
+    })
+
+  // Every loaded joined-run task is an ordinary task node; a joined run gets the joined-run look on top.
+  const visitExpanded = (taskId: string, column: number): number => {
+    placed.add(taskId)
+    const task = expanded.get(taskId)
+    const nodeId = joinedNodeId(taskId)
+    const node: Node = !task
+      ? {
+          id: nodeId,
+          type: "joinedTaskNode",
+          position: { x: column * COLUMN_WIDTH, y: 0 },
+          // A run that couldn't be loaded (never recorded, deleted, or not readable) stays a placeholder.
+          data: { taskId },
+          connectable: false,
+          deletable: false,
+        }
+      : { ...createNode(task, column, 0, nodeId), type: joinTargets.has(taskId) ? "joinedRunNode" : "taskNode" }
+    nodes.push(node)
+    const childRows: number[] = []
+    if (task) {
+      joiners.push({ nodeId, task })
+      const joined = joinedChildren(task, true)
+      // Like the workflow tree: children by parent_id, plus listed children whose parent wasn't expanded.
+      const children = [
+        ...(expandedChildMap.get(taskId) ?? []),
+        ...task.children.flatMap((childId) => {
+          const child = expanded.get(childId)
+          return child && !(child.parent_id && expanded.has(child.parent_id)) ? [child] : []
+        }),
+      ].sort((a, b) => a.id.localeCompare(b.id))
+      for (const child of children) {
+        if (placed.has(child.id) || taskMap.has(child.id)) continue
+        edges.push(createEdge(nodeId, joinedNodeId(child.id)))
+        layoutParents.set(joinedNodeId(child.id), nodeId)
+        childRows.push(visitExpanded(child.id, column + 1))
+      }
+      for (const joinedId of joined) {
+        layoutParents.set(joinedNodeId(joinedId), nodeId)
+        childRows.push(visitExpanded(joinedId, column + 1))
+      }
+    }
+    const row = childRows.length ? (childRows[0] + childRows[childRows.length - 1]) / 2 : nextLeafRow++
+    node.position.y = row * ROW_HEIGHT
+    return row
+  }
+
+  const visitTask = (task: Task, column: number, extraJoined: string[] = []): number => {
     visited.add(task.id)
     const node = createNode(task, column, 0)
     nodes.push(node)
+    joiners.push({ nodeId: task.id, task })
+    // Claimed before the children are visited, so a run goes under its first joiner in layout order.
+    const joined = [...joinedChildren(task, false), ...extraJoined]
 
     const children = [...(childMap.get(task.id) || [])]
     for (const childId of task.children) {
@@ -113,129 +206,55 @@ export const getFlowGraph = (
           return row
         }
         edges.push(createEdge(task.id, child.id))
+        layoutParents.set(child.id, task.id)
         return visitTask(child, column + 1)
       })
+    // Joined runs come after the task's own children, so they sit just below them.
+    for (const joinedId of joined) {
+      layoutParents.set(joinedNodeId(joinedId), task.id)
+      childRows.push(visitExpanded(joinedId, column + 1))
+    }
     const row = childRows.length ? (childRows[0] + childRows[childRows.length - 1]) / 2 : nextLeafRow++
     node.position.y = row * ROW_HEIGHT
     return row
   }
 
-  // Joined runs belong to other workflows: drawn after the tree, never part of it. The task-workflow read chooses
-  // which (joinedRuns.ids) and expands each into its subtree; the graph draws those, each subtree under its run,
-  // with at most MAX_JOINED_RUNS dashed edges.
   let hiddenJoinLinks = 0
-  const addJoinedRuns = () => {
-    const expanded = new Map(joinedRuns.tasks.map((task) => [task.id, task]))
-    const expandedChildMap = getChildMap(joinedRuns.tasks)
-    const walked = new Set([...joinedRuns.ids, ...joinedRuns.walked])
-    // A joined run keeps its joined-run look however the layout reaches it, even as another run's child.
-    const joinTargets = new Set(
-      [...tasks, ...joinedRuns.tasks].flatMap((task) => task.joined_tasks ?? []).concat(joinedRuns.ids),
-    )
-    const nodeIds = new Set(nodes.map((node) => node.id))
-    const joinedNodeIds = new Map<string, string>()
-    // A member's own id may already look like a joined node id ("joined:<id>"); prefix again until it's free.
-    const joinedNodeId = (taskId: string) => {
-      let nodeId = joinedNodeIds.get(taskId)
-      if (nodeId) return nodeId
-      nodeId = JOINED_NODE_PREFIX + taskId
-      while (nodeIds.has(nodeId)) nodeId = JOINED_NODE_PREFIX + nodeId
-      nodeIds.add(nodeId)
-      joinedNodeIds.set(taskId, nodeId)
-      return nodeId
-    }
-    const chosen = joinedRuns.ids.filter((taskId) => !visited.has(taskId))
-    for (const taskId of chosen) joinedNodeId(taskId)
-
-    // Joined runs to lay out, each from the column after the first task whose dashed edge reaches it.
-    const queue: Array<{ taskId: string; column: number }> = []
-    const queued = new Set<string>()
-    const placed = new Set<string>()
+  const drawJoinEdges = () => {
     let edgeBudget = MAX_JOINED_RUNS
-    const drawJoins = (task: Task, sourceId: string, column: number, isTarget: (taskId: string) => boolean) => {
+    for (const { nodeId, task } of joiners)
       for (const joinedId of task.joined_tasks ?? []) {
-        if (!isTarget(joinedId)) continue
+        // A member is a dashed edge only; a run the read cut or never drew gets none (the note counts it).
+        const target = visited.has(joinedId) ? joinedId : placed.has(joinedId) ? joinedNodeId(joinedId) : undefined
+        if (!target) continue
         if (!edgeBudget) {
           hiddenJoinLinks++
           continue
         }
         edgeBudget--
-        if (visited.has(joinedId)) {
-          edges.push(createJoinedEdge(sourceId, joinedId))
-          continue
-        }
-        if (!queued.has(joinedId)) {
-          queued.add(joinedId)
-          queue.push({ taskId: joinedId, column: column + 1 })
-        }
-        edges.push(createJoinedEdge(sourceId, joinedNodeId(joinedId)))
+        edges.push(createJoinedEdge(nodeId, target))
       }
-    }
-
-    const chosenSet = new Set(chosen)
-    for (const node of nodes) {
-      const task = node.data as unknown as Task
-      // A "-replaced" duplicate shares its task; only the task's own node draws the joins.
-      if (node.id !== task.id) continue
-      drawJoins(task, task.id, node.position.x / COLUMN_WIDTH, (taskId) => visited.has(taskId) || chosenSet.has(taskId))
-    }
-    // A chosen run with no drawn edge (say, its joiner is older than the members the graph has) still gets a node.
-    for (const taskId of chosen)
-      if (!queued.has(taskId)) {
-        queued.add(taskId)
-        queue.push({ taskId, column: (nodes[0]?.position.x ?? 0) / COLUMN_WIDTH + 1 })
-      }
-
-    // Every loaded task is an ordinary task node; a joined run gets the joined-run look on top.
-    const visitExpanded = (taskId: string, column: number): number => {
-      placed.add(taskId)
-      const task = expanded.get(taskId)
-      const nodeId = joinedNodeId(taskId)
-      const node: Node = !task
-        ? {
-            id: nodeId,
-            type: "joinedTaskNode",
-            position: { x: column * COLUMN_WIDTH, y: 0 },
-            // A run that couldn't be loaded (never recorded, deleted, or not readable) stays a placeholder.
-            data: { taskId },
-            connectable: false,
-            deletable: false,
-          }
-        : { ...createNode(task, column, 0, nodeId), type: joinTargets.has(taskId) ? "joinedRunNode" : "taskNode" }
-      nodes.push(node)
-      // A join the walk never reached was cut by its bounds and is counted in the note, not drawn.
-      if (task) drawJoins(task, nodeId, column, (joinedId) => visited.has(joinedId) || walked.has(joinedId))
-      // Like the workflow tree: children by parent_id, plus listed children whose parent wasn't expanded.
-      const children = !task
-        ? []
-        : [
-            ...(expandedChildMap.get(taskId) ?? []),
-            ...task.children.flatMap((childId) => {
-              const child = expanded.get(childId)
-              return child && !(child.parent_id && expanded.has(child.parent_id)) ? [child] : []
-            }),
-          ].sort((a, b) => a.id.localeCompare(b.id))
-      const childRows: number[] = []
-      for (const child of children) {
-        if (placed.has(child.id) || visited.has(child.id)) continue
-        edges.push(createEdge(nodeId, joinedNodeId(child.id)))
-        childRows.push(visitExpanded(child.id, column + 1))
-      }
-      const row = childRows.length ? (childRows[0] + childRows[childRows.length - 1]) / 2 : nextLeafRow++
-      node.position.y = row * ROW_HEIGHT
-      return row
-    }
-    for (let index = 0; index < queue.length; index++)
-      if (!placed.has(queue[index].taskId)) visitExpanded(queue[index].taskId, queue[index].column)
   }
 
   const rootTask = taskMap.get(rootTaskId)
   if (rootTask) {
-    const rootRow = visitTask(rootTask, initialPosition?.x ?? 0)
-    addJoinedRuns()
+    // A chosen run that no member the graph holds joined (its joiner is older than those members) hangs off the root.
+    const joinedByMembers = new Set(tasks.flatMap((task) => task.joined_tasks ?? []))
+    const unjoined = [...chosen].filter((taskId) => !joinedByMembers.has(taskId))
+    for (const taskId of unjoined) placed.add(taskId)
+    const rootRow = visitTask(rootTask, initialPosition?.x ?? 0, unjoined)
+    // A chosen run whose only joiners weren't drawn (unreachable members, or a cycle) is laid out below the tree.
+    for (const taskId of joinedRuns.ids)
+      if (chosen.has(taskId) && !placed.has(taskId)) visitExpanded(taskId, (initialPosition?.x ?? 0) + 1)
+    drawJoinEdges()
     const offset = ((initialPosition?.y ?? 0) - rootRow) * ROW_HEIGHT
     for (const node of nodes) node.position.y += offset
   }
+
+  const joinedBelow = new Map<string, string[]>()
+  for (const nodeId of joinedNodeIds.values())
+    for (let ancestor = layoutParents.get(nodeId); ancestor; ancestor = layoutParents.get(ancestor))
+      if (taskMap.has(ancestor)) joinedBelow.set(ancestor, [...(joinedBelow.get(ancestor) ?? []), nodeId])
 
   return {
     nodes: nodes,
@@ -243,6 +262,7 @@ export const getFlowGraph = (
     hiddenJoinedRuns: joinedRuns.total - joinedRuns.ids.length,
     hiddenJoinedBranches: joinedRuns.cut,
     hiddenJoinLinks,
+    joinedBelow,
   }
 }
 
@@ -267,6 +287,8 @@ export const getLayoutKey = (tasks: Task[], rootTaskId: string, joinedRuns: Join
     ...taskLinks(tasks),
     // The chosen ids keep the read's order: it decides which joined node ids and rows they take.
     `joined:${joinedRuns.ids.join(",")}/${joinedRuns.total}/${joinedRuns.cut}`,
+    // Which ids the walk reached decides which joins get a placeholder node.
+    `walked:${[...joinedRuns.walked].sort().join(",")}`,
     ...taskLinks(joinedRuns.tasks).map((links) => `expanded:${links}`),
   ].join("|")
 
@@ -296,7 +318,36 @@ export const hiddenJoinsNote = (runs: number, links: number, branches = 0): stri
 }
 
 const FOCUS_ZOOM = 1
+// Low enough to frame a task together with large joined runs laid out under it.
+const MIN_ZOOM = 0.1
 const ZOOM_ANIMATION_SPEED = 1000
+// A task node's footprint (60px avatar); laid-out positions are unmeasured top-left corners.
+const NODE_SIZE = 64
+
+/**
+ * The view that frames a task's node together with the joined runs laid out in its subtree, at most at FOCUS_ZOOM:
+ * a task that joined nothing is centred as before; one whose subtree holds joined runs shows them too.
+ */
+export const focusViewport = (
+  nodes: Node[],
+  joinedBelow: Map<string, string[]>,
+  taskId: string,
+  width: number,
+  height: number,
+): Viewport | undefined => {
+  const framed = new Set([taskId, ...(joinedBelow.get(taskId) ?? [])])
+  const positions = nodes.filter((node) => framed.has(node.id)).map((node) => node.position)
+  if (!positions.length) return undefined
+  const x = Math.min(...positions.map((position) => position.x))
+  const y = Math.min(...positions.map((position) => position.y))
+  const bounds = {
+    x,
+    y,
+    width: Math.max(...positions.map((position) => position.x)) - x + NODE_SIZE,
+    height: Math.max(...positions.map((position) => position.y)) - y + NODE_SIZE,
+  }
+  return getViewportForBounds(bounds, width, height, MIN_ZOOM, FOCUS_ZOOM, 0.1)
+}
 
 const EXPORT_IMAGE_WIDTH = 1920
 const EXPORT_IMAGE_HEIGHT = 1080
@@ -330,17 +381,16 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
   const [joinsNote, setJoinsNote] = useState<string>()
   const isDark = useIsDark()
 
+  const width = useStore((state) => state.width)
+  const height = useStore((state) => state.height)
+  const joinedBelowRef = useRef(new Map<string, string[]>())
   const focusNode = useCallback(
-    (nodeId: string) => {
-      const node = nodes.find((node) => node.id === nodeId)
-      if (node)
-        flow.setCenter(node.position.x, node.position.y, {
-          zoom: FOCUS_ZOOM,
-          duration: ZOOM_ANIMATION_SPEED,
-        })
+    (nodeId: string, graphNodes: Node[] = flow.getNodes()) => {
+      const viewport = focusViewport(graphNodes, joinedBelowRef.current, nodeId, width, height)
+      if (viewport) flow.setViewport(viewport, { duration: ZOOM_ANIMATION_SPEED })
       else flow.setCenter(0, 0, { zoom: FOCUS_ZOOM, duration: ZOOM_ANIMATION_SPEED })
     },
-    [flow, nodes],
+    [flow, width, height],
   )
 
   const fitView = useCallback(() => flow.fitView({ duration: ZOOM_ANIMATION_SPEED }), [flow])
@@ -349,18 +399,10 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
 
   useEffect(() => {
     const graph = getFlowGraph(tasks, rootTaskId, undefined, joinedRuns)
+    joinedBelowRef.current = graph.joinedBelow
     setNodes(graph.nodes)
     setEdges(graph.edges)
     setJoinsNote(hiddenJoinsNote(graph.hiddenJoinedRuns, graph.hiddenJoinLinks, graph.hiddenJoinedBranches))
-    if (!isInitialized && currentTaskId) {
-      const node = graph.nodes.find((node) => node.id === currentTaskId)
-      if (node)
-        flow.setCenter(node.position.x, node.position.y, {
-          zoom: FOCUS_ZOOM,
-          duration: ZOOM_ANIMATION_SPEED,
-        })
-    }
-    setInitialized(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layoutKey, setNodes, setEdges, flow])
 
@@ -370,9 +412,20 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
     [tasks, joinedRuns, setNodes],
   )
 
+  // The first view frames the current task, with the joined runs laid out under it, once the graph holds it and
+  // the canvas has a size.
+  useEffect(() => {
+    if (isInitialized) return
+    if (currentTaskId) {
+      if (!width || !height || !nodes.some((node) => node.id === currentTaskId)) return
+      focusNode(currentTaskId, nodes)
+    }
+    setInitialized(true)
+  }, [nodes, width, height, isInitialized, currentTaskId, focusNode])
+
   useEffect(() => {
     if (!currentTaskId) fitView()
-    else focusNode(currentTaskId)
+    else if (isInitialized) focusNode(currentTaskId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTaskId])
 
@@ -405,6 +458,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
       onEdgesChange={onEdgesChange}
       nodesDraggable={!locked}
       nodeTypes={nodeTypes}
+      minZoom={MIN_ZOOM}
     >
       <Background />
       <Controls showZoom={false} showFitView={false} showInteractive={false}>
