@@ -1,6 +1,6 @@
 import { createTask } from "@test-fixtures"
 import { MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
-import { getFlowGraph, hiddenJoinsNote } from "./flow-chart"
+import { focusViewport, getFlowGraph, hiddenJoinsNote } from "./flow-chart"
 
 describe("getFlowGraph", () => {
   it("keeps nested channel and resource branches in separate rows", () => {
@@ -288,11 +288,89 @@ describe("getFlowGraph joined runs", () => {
     expect(edges.find((edge) => edge.id === "root>child")?.style).toBeUndefined()
   })
 
-  it("keeps joined nodes off the rows of the tree", () => {
-    const { nodes } = getFlowGraph([root, child], "root", undefined, chosen)
-    const treeRows = new Set(nodes.filter((node) => node.type === "taskNode").map((node) => node.position.y))
+  it("lays each joined run out as a child of its joiner, inside the joiner's subtree", () => {
+    // Fyr's shape: cache_all -> cache_by_organization -> two channel tasks that joined runs.
+    const all = createTask({ id: "all" })
+    const organization = createTask({ id: "organization", parent_id: "all" })
+    const meta = createTask({ id: "meta", parent_id: "organization", joined_tasks: ["run-1", "run-2"] })
+    const linkedin = createTask({ id: "linkedin", parent_id: "organization", joined_tasks: ["run-3"] })
+    const runs = [
+      createTask({ id: "run-1", workflow_id: "nightly", children: ["step-1a", "step-1b"] }),
+      createTask({ id: "step-1a", workflow_id: "nightly", parent_id: "run-1" }),
+      createTask({ id: "step-1b", workflow_id: "nightly", parent_id: "run-1" }),
+      createTask({ id: "run-2", workflow_id: "nightly" }),
+      createTask({ id: "run-3", workflow_id: "nightly", children: ["step-3a"] }),
+      createTask({ id: "step-3a", workflow_id: "nightly", parent_id: "run-3" }),
+    ]
+    const { nodes, edges } = getFlowGraph([all, organization, meta, linkedin], "all", undefined, {
+      ids: ["run-1", "run-2", "run-3"],
+      total: 3,
+      tasks: runs,
+      walked: runs.map((task) => task.id),
+      cut: 0,
+    })
+    const position = (id: string) => nodes.find((node) => node.id === id)!.position
+    const span = (ids: string[]) => {
+      const rows = ids.map((id) => position(id).y)
+      return [Math.min(...rows), Math.max(...rows)]
+    }
 
-    for (const node of nodes.filter(isJoinedRoot)) expect(treeRows.has(node.position.y)).toBe(false)
+    for (const [joiner, run] of [
+      ["meta", "joined:run-1"],
+      ["meta", "joined:run-2"],
+      ["linkedin", "joined:run-3"],
+    ]) {
+      expect(position(run).x).toBe(position(joiner).x + 180)
+      expect(edges).toContainEqual(expect.objectContaining({ source: joiner, target: run }))
+    }
+    const metaSpan = span(["meta", "joined:run-1", "joined:step-1a", "joined:step-1b", "joined:run-2"])
+    const linkedinSpan = span(["linkedin", "joined:run-3", "joined:step-3a"])
+    // The joiner sits within its joined runs' rows, and sibling subtrees don't overlap.
+    expect(position("meta").y).toBeGreaterThanOrEqual(position("joined:run-1").y)
+    expect(position("meta").y).toBeLessThanOrEqual(position("joined:run-2").y)
+    expect(metaSpan[1] < linkedinSpan[0] || linkedinSpan[1] < metaSpan[0]).toBe(true)
+    const spots = nodes.map((node) => `${node.position.x},${node.position.y}`)
+    expect(new Set(spots).size).toBe(spots.length)
+  })
+
+  it("frames a task with the joined runs laid out under it, and centres one that joined nothing", () => {
+    const all = createTask({ id: "all" })
+    const meta = createTask({ id: "meta", parent_id: "all", joined_tasks: ["run-1"] })
+    const quiet = createTask({ id: "quiet", parent_id: "all" })
+    const runs = [
+      createTask({ id: "run-1", workflow_id: "nightly" }),
+      ...Array.from({ length: 11 }, (_, index) =>
+        createTask({ id: `step-${index}`, workflow_id: "nightly", parent_id: "run-1" }),
+      ),
+    ]
+    const graph = getFlowGraph([all, meta, quiet], "all", undefined, {
+      ids: ["run-1"],
+      total: 1,
+      tasks: runs,
+      walked: runs.map((task) => task.id),
+      cut: 0,
+    })
+    expect(graph.joinedBelow.get("all")).toHaveLength(runs.length)
+    expect(graph.joinedBelow.get("meta")).toHaveLength(runs.length)
+    expect(graph.joinedBelow.get("quiet")).toBeUndefined()
+
+    const [width, height] = [800, 400]
+    const onScreen = (id: string, viewport: { x: number; y: number; zoom: number }) => {
+      const { x, y } = graph.nodes.find((node) => node.id === id)!.position
+      return [x * viewport.zoom + viewport.x, y * viewport.zoom + viewport.y]
+    }
+    const framed = focusViewport(graph.nodes, graph.joinedBelow, "all", width, height)!
+    for (const id of ["all", ...graph.joinedBelow.get("all")!]) {
+      const [x, y] = onScreen(id, framed)
+      expect(x).toBeGreaterThanOrEqual(0)
+      expect(x).toBeLessThanOrEqual(width)
+      expect(y).toBeGreaterThanOrEqual(0)
+      expect(y).toBeLessThanOrEqual(height)
+    }
+    const centred = focusViewport(graph.nodes, graph.joinedBelow, "quiet", width, height)!
+    expect(centred.zoom).toBe(1)
+    const [x, y] = onScreen("quiet", centred)
+    expect([x + 32, y + 32]).toEqual([width / 2, height / 2])
   })
 
   it("draws exactly the runs the read chose, even ones its members don't link to", () => {
@@ -471,13 +549,17 @@ describe("getFlowGraph joined runs", () => {
       )
     })
 
-    it("leaves the workflow members where they were", () => {
+    it("keeps the members' own structure and gives every node its own spot", () => {
       const membersOnly = getFlowGraph([member, memberChild], "root")
       const memberNodes = graph.nodes.filter((candidate) => ["root", "child"].includes(candidate.id))
-      expect(memberNodes).toEqual(membersOnly.nodes)
-      const treeRows = new Set(memberNodes.map((candidate) => candidate.position.y))
-      for (const candidate of graph.nodes.filter((other) => other.id.startsWith("joined:")))
-        expect(treeRows.has(candidate.position.y)).toBe(false)
+      expect(memberNodes.map((candidate) => [candidate.id, candidate.position.x])).toEqual(
+        membersOnly.nodes.map((candidate) => [candidate.id, candidate.position.x]),
+      )
+      expect(graph.edges.filter((edge) => ["root", "child"].includes(edge.target))).toEqual(
+        expect.arrayContaining(membersOnly.edges),
+      )
+      const spots = graph.nodes.map((candidate) => `${candidate.position.x},${candidate.position.y}`)
+      expect(new Set(spots).size).toBe(spots.length)
     })
 
     it("notes the branches the read left unexpanded", () => {
