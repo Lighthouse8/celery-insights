@@ -6,6 +6,12 @@ export const MAX_JOINED_RUNS = 100
 export const MAX_EXPANDED_TASKS = 2000
 /** Levels the read walks below the runs the workflow joined; runs joined further down share the count. */
 export const MAX_EXPANSION_DEPTH = 20
+/**
+ * Members whose joins the read considers, as many as the graph holds. Unordered, so the index scan stops there;
+ * ordering by recency would read and sort every member.
+ * ponytail: past this, other members' joins aren't candidates and an unread member can pass for a joined run.
+ */
+export const MAX_LINKING_MEMBERS = 10000
 
 /**
  * The joined runs the task-workflow read chose for a workflow: `ids` (first MAX_JOINED_RUNS non-member ids in id
@@ -43,7 +49,7 @@ const linksOf = (records: string, seen: string) =>
  */
 export const joinedRunsQuery = (): { statements: string[]; fields: string } => {
   const statements = [
-    "LET $links = SELECT record::id(id) AS task_id,joined_tasks FROM task WHERE workflow_id = $workflowId TIMEOUT 2s",
+    `LET $links = SELECT record::id(id) AS task_id,joined_tasks FROM task WHERE workflow_id = $workflowId LIMIT ${MAX_LINKING_MEMBERS} TIMEOUT 2s`,
     "LET $joinedCandidates = array::sort(array::complement(array::distinct(array::filter(array::flatten($links.joined_tasks),|$id| $id != NONE)),$links.task_id))",
     `LET $seen0 = array::slice($joinedCandidates,0,${MAX_JOINED_RUNS})`,
     `LET $found0 = ${lookup("$seen0")}`,

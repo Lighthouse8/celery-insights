@@ -1,8 +1,19 @@
-import { joinedRunsQuery, MAX_EXPANDED_TASKS, MAX_EXPANSION_DEPTH, MAX_JOINED_RUNS } from "./joined-runs"
+import {
+  joinedRunsQuery,
+  MAX_EXPANDED_TASKS,
+  MAX_EXPANSION_DEPTH,
+  MAX_JOINED_RUNS,
+  MAX_LINKING_MEMBERS,
+} from "./joined-runs"
 
 describe("joinedRunsQuery", () => {
   const { statements, fields } = joinedRunsQuery()
   const statement = (name: string) => statements.find((candidate) => candidate.startsWith(`LET $${name} =`)) ?? ""
+
+  it("reads at most MAX_LINKING_MEMBERS members' links, unordered so the scan stops there", () => {
+    expect(statement("links")).toContain(` LIMIT ${MAX_LINKING_MEMBERS} `)
+    expect(statement("links")).not.toContain("ORDER BY")
+  })
 
   it("chooses the first MAX_JOINED_RUNS non-member joined ids", () => {
     expect(statement("seen0")).toBe(`LET $seen0 = array::slice($joinedCandidates,0,${MAX_JOINED_RUNS})`)
