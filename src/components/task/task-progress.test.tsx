@@ -16,7 +16,6 @@ describe("TaskProgressPanel", () => {
     const progress = report({
       current: 2,
       total: 3,
-      description: "Levels 2/3 > Days 17/90",
       updated_at,
       sections: [
         { description: "Levels", current: 2, total: 3 },
@@ -33,6 +32,19 @@ describe("TaskProgressPanel", () => {
     // Overall, Levels and Days have totals, so they get bars; the pages count doesn't.
     expect(document.querySelectorAll("[data-slot=progress]")).toHaveLength(3)
     expect(screen.getByText(`Last reported ${updated_at.toLocaleString()}`)).toBeInTheDocument()
+  })
+
+  it("labels the overall line with the description next to its sections", () => {
+    const progress = report({
+      current: 1,
+      total: 4,
+      description: "Importing rows",
+      sections: [{ description: "Batches", current: 1, total: 4 }],
+    })
+    render(<TaskProgressPanel task={createTask({ progress })} />)
+    expect(screen.getByText("Importing rows")).toBeInTheDocument()
+    expect(screen.queryByText("Overall")).toBeNull()
+    expect(screen.getByText("Batches")).toBeInTheDocument()
   })
 
   it("labels the overall line with the description when the task sent no sections", () => {

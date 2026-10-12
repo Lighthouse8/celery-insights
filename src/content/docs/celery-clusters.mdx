@@ -50,7 +50,7 @@ def import_rows(self, rows):
 ```
 
 - `current` is required and must be a number from 0 to 2^53; a report without a usable `current` is ignored. `total` and `description` are optional; leave out `total` when it is unknown. An unusable `total` (zero, negative, not a number) is dropped and the count kept.
-- A task with nested loops can add `sections`: a list of up to 10 `{"description", "current", "total"}` entries, outermost loop first. The Progress box shows the overall count first and then each section on its own line, with its own bar when it has a total. Entries without a usable `current` are dropped.
+- A task with nested loops can add `sections`: a list of up to 10 `{"description", "current", "total"}` entries, outermost loop first. The Progress box shows the overall count first, labelled with `description` (or "Overall" without one), and then each section on its own line, with its own bar when it has a total. Entries without a usable `current` are dropped.
 
   ```python
   self.send_event(

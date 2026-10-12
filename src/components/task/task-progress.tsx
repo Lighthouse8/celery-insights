@@ -63,7 +63,7 @@ const TaskProgressPanel: React.FC<{ task: Task }> = ({ task }) => {
       <div className="space-y-4 p-3">
         <ProgressLine
           emphasis
-          label={sections.length ? "Overall" : (progress.description ?? "Overall")}
+          label={progress.description ?? "Overall"}
           current={progress.current}
           total={progress.total}
         />
