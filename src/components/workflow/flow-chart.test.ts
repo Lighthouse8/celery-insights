@@ -3,6 +3,7 @@ import { createTask } from "@test-fixtures"
 import { fireEvent } from "@testing-library/react"
 import { type JoinedRuns, MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
 import { TASK_NODE_LABEL_GAP } from "@lib/task-node-fields"
+import useSettingsStore from "@stores/use-settings-store"
 import { type Task, TaskState } from "@/types/surreal-records"
 import { ReactFlowProvider, useStoreApi } from "@xyflow/react"
 import { createElement, useEffect } from "react"
@@ -38,12 +39,7 @@ vi.mock("@tanstack/react-router", () => ({
 }))
 
 describe("FlowChart", () => {
-  afterEach(() => {
-    vi.restoreAllMocks()
-    vi.unstubAllGlobals()
-  })
-
-  it("fits the graph on mount once React Flow has measured the nodes", async () => {
+  beforeEach(() => {
     // happy-dom lays nothing out: report every observed node as a 60px avatar.
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(60)
     vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(60)
@@ -60,12 +56,64 @@ describe("FlowChart", () => {
       },
     )
     viewportMoves.fitBounds.mockClear()
-    const tasks = [createTask({ id: "root" }), createTask({ id: "child", parent_id: "root" })]
+  })
 
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    useSettingsStore.setState({ taskNodeLabels: false })
+  })
+
+  const tasks = [createTask({ id: "root" }), createTask({ id: "child", parent_id: "root" })]
+  const renderChart = () =>
     render(createElement(ReactFlowProvider, null, createElement(FlowChart, { tasks, rootTaskId: "root" })))
+
+  it("fits the graph on mount once React Flow has measured the nodes", async () => {
+    renderChart()
 
     await waitFor(() => expect(viewportMoves.fitBounds).toHaveBeenCalledTimes(1))
     expect(viewportMoves.fitBounds.mock.calls[0][0]).toEqual({ x: 0, y: 0, width: 240, height: 60 })
+  })
+
+  const miniMap = async () => {
+    const { container } = renderChart()
+    await waitFor(() => expect(container.querySelectorAll(".react-flow__minimap-node")).toHaveLength(2))
+    const [x, y, width, height] = container
+      .querySelector(".react-flow__minimap-svg")!
+      .getAttribute("viewBox")!
+      .split(" ")
+      .map(Number)
+    const rects = [...container.querySelectorAll(".react-flow__minimap-node")].map((rect) =>
+      Object.fromEntries(["x", "y", "width", "height"].map((key) => [key, Number(rect.getAttribute(key))])),
+    )
+    return { view: { x, y, x2: x + width, y2: y + height }, rects }
+  }
+
+  it("draws avatar-sized MiniMap nodes while labels are off", async () => {
+    const { view, rects } = await miniMap()
+
+    expect(rects).toEqual([
+      { x: 0, y: 0, width: 60, height: 60 },
+      { x: 180, y: 0, width: 60, height: 60 },
+    ])
+    expect(view.x).toBeGreaterThan(-80)
+  })
+
+  it("draws MiniMap nodes with their labels and keeps the labels inside the MiniMap", async () => {
+    useSettingsStore.setState({ taskNodeLabels: true, taskNodeFields: "type", hiddenTaskNodeFields: [] })
+
+    const { view, rects } = await miniMap()
+
+    expect(rects).toEqual([
+      { x: -80, y: 0, width: 220, height: 60 + TASK_NODE_LABEL_GAP + 14 },
+      { x: 180, y: 0, width: 220, height: 60 + TASK_NODE_LABEL_GAP + 14 },
+    ])
+    for (const rect of rects) {
+      expect(rect.x).toBeGreaterThanOrEqual(view.x)
+      expect(rect.y).toBeGreaterThanOrEqual(view.y)
+      expect(rect.x + rect.width).toBeLessThanOrEqual(view.x2)
+      expect(rect.y + rect.height).toBeLessThanOrEqual(view.y2)
+    }
   })
 })
 
