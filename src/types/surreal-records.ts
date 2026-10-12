@@ -215,7 +215,7 @@ export interface TaskProgress {
   current: number
   total?: number
   description?: string
-  updated_at: Date
+  updated_at?: Date
 }
 
 /** Parsed task — same shape as SurrealTask but with extracted id and Date timestamps */
@@ -316,7 +316,7 @@ export const parseTask = (raw: SurrealTask): Task => ({
           current: raw.progress.current,
           total: raw.progress.total ?? undefined,
           description: raw.progress.description || undefined,
-          updated_at: isoToDate(raw.progress.updated_at) || new Date(),
+          updated_at: isoToDate(raw.progress.updated_at),
         }
       : undefined,
 })

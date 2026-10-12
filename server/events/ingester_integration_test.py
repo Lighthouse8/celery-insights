@@ -384,3 +384,41 @@ async def test_progress_follows_latest_report_and_resets_on_new_attempt(
     job = await ingest(progress(1700000041.0, current=8, total=10, attempt=2))
     assert job["progress"]["attempt"] == 2
     assert job["progress"]["current"] == 2
+
+
+@pytest.mark.asyncio
+async def test_new_attempt_clears_progress_tagged_with_an_earlier_attempt(
+    surreal_db: AsyncWsSurrealConnection, mocker: MockerFixture
+) -> None:
+    mocker.patch("events.ingester.get_db", return_value=surreal_db)
+    ingester = SurrealDBIngester(asyncio.Queue())
+
+    async def ingest(*events: dict) -> dict:
+        ingester._buffer = list(events)
+        await ingester._flush()
+        assert ingester._buffer == [], "flush failed and re-queued the batch"
+        return cast(list[dict], await surreal_db.query("SELECT * FROM task:job"))[0]
+
+    job = await ingest(
+        {"type": "task-received", "uuid": "job", "timestamp": 1700000000.0, "name": "reports.cache", "retries": 0},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000001.0},
+        {"type": "task-progress", "uuid": "job", "timestamp": 1700000002.0, "current": 7, "total": 10, "attempt": 0},
+    )
+    assert job["progress"]["attempt"] == 0
+
+    # The next attempt's worker clock runs behind, so only the attempt shows the report is stale.
+    job = await ingest(
+        {"type": "task-retried", "uuid": "job", "timestamp": 1700000003.0},
+        {"type": "task-received", "uuid": "job", "timestamp": 1700000000.5, "retries": 1},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000001.5},
+    )
+    assert job["retries"] == 1
+    assert job.get("progress") is None
+
+    # An event that raises retries itself clears the report in the same upsert.
+    job = await ingest(
+        {"type": "task-progress", "uuid": "job", "timestamp": 1700000004.0, "current": 3, "total": 10, "attempt": 1},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000002.0, "retries": 2},
+    )
+    assert job["retries"] == 2
+    assert job.get("progress") is None

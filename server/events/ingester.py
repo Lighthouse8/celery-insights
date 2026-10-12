@@ -416,14 +416,23 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
     if event_type == "task-failed" or event.get("exception") or event.get("traceback"):
         set_clauses.append("had_error = true")
 
+    # Retries only go up, and a retry's task-received can come from a worker whose clock is behind;
+    # progress ordering by attempt needs the latest count.
+    event_retries = event.get("retries")
+    retries = f"${p}_previous.retries ?? 0"
+    if isinstance(event_retries, int) and not isinstance(event_retries, bool):
+        retries = f"math::max([{retries}, ${p}_retries])"
+
     if event_type in ("task-retried", "task-started"):
         # A retry starts from zero, so both events drop progress reported before them. task-retried
         # comes from the failed attempt's own worker, whose clock orders that attempt's reports even
         # when the next attempt's worker clock runs behind. Reports that carry their attempt are
-        # ordered by it instead, so a delayed retry event can't clear the next attempt's progress.
+        # ordered by it instead: they are dropped once retries passes their attempt, and a delayed
+        # retry event can't clear the next attempt's progress.
         set_clauses.append(
-            f"progress = IF ${p}_previous.progress.attempt IS NONE"
-            f" AND ${p}_previous.progress.updated_at < <datetime>${p}_ts"
+            f"progress = IF (${p}_previous.progress.attempt IS NONE"
+            f" AND ${p}_previous.progress.updated_at < <datetime>${p}_ts)"
+            f" OR (${p}_previous.progress.attempt != NONE AND ${p}_previous.progress.attempt < ({retries}))"
             f" THEN NONE ELSE ${p}_previous.progress END"
         )
     if event_type == "task-started":
@@ -444,9 +453,7 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
             pname = f"{p}_{db_field}"
             params[pname] = value if isinstance(value, int | float) else str(value)
             if db_field == "retries" and isinstance(value, int) and not isinstance(value, bool):
-                # Retries only go up, and a retry's task-received can come from a worker whose
-                # clock is behind; progress ordering by attempt needs the latest count.
-                set_clauses.append(f"retries = math::max([${p}_previous.retries ?? 0, ${pname}])")
+                set_clauses.append(f"retries = {retries}")
                 continue
             # Result polling can observe a newer state before send/receive metadata arrives.
             set_clauses.append(
