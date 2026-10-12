@@ -5,7 +5,7 @@ import type { Task } from "@/types/surreal-records"
 import { type JoinedRuns, MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
 import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
 import { toSvg } from "html-to-image"
-import React, { useCallback, useEffect, useRef, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Background,
   ControlButton,
@@ -278,15 +278,46 @@ export const hiddenJoinsNote = (runs: number, links: number, branches = 0): stri
 }
 
 const FOCUS_ZOOM = 1
-// Low enough to frame a task together with large joined runs laid out under it.
+// The canvas lets users zoom out at least this far, and further when the graph needs it to fit.
 const MIN_ZOOM = 0.1
+// Below this nodes are sub-pixel; a graph needing less is framed only in part.
+const ZOOM_FLOOR = 0.001
+const FIT_PADDING = 0.1
 const ZOOM_ANIMATION_SPEED = 1000
 // A task node's footprint (60px avatar); laid-out positions are unmeasured top-left corners.
 const NODE_SIZE = 64
 
+const boundsOf = (positions: XYPosition[]) => {
+  const x = Math.min(...positions.map((position) => position.x))
+  const y = Math.min(...positions.map((position) => position.y))
+  return {
+    x,
+    y,
+    width: Math.max(...positions.map((position) => position.x)) - x + NODE_SIZE,
+    height: Math.max(...positions.map((position) => position.y)) - y + NODE_SIZE,
+  }
+}
+
+/** The canvas's minimum zoom: MIN_ZOOM, or less when the whole laid-out graph needs it to fit. */
+export const canvasMinZoom = (nodes: Node[], width: number, height: number): number =>
+  nodes.length && width && height
+    ? Math.min(
+        MIN_ZOOM,
+        getViewportForBounds(
+          boundsOf(nodes.map((node) => node.position)),
+          width,
+          height,
+          ZOOM_FLOOR,
+          FOCUS_ZOOM,
+          FIT_PADDING,
+        ).zoom,
+      )
+    : MIN_ZOOM
+
 /**
- * The view that frames a task's node together with the joined runs laid out in its subtree, at most at FOCUS_ZOOM:
- * a task that joined nothing is centred as before; one whose subtree holds joined runs shows them too.
+ * The view that frames a task's node together with the joined runs laid out in its subtree, at most at FOCUS_ZOOM
+ * and at least at the canvas's minimum zoom, which fits the whole graph: a task that joined nothing is centred as
+ * before; one whose subtree holds joined runs shows them too.
  */
 export const focusViewport = (
   nodes: Node[],
@@ -298,15 +329,14 @@ export const focusViewport = (
   const framed = new Set([taskId, ...(joinedBelow.get(taskId) ?? [])])
   const positions = nodes.filter((node) => framed.has(node.id)).map((node) => node.position)
   if (!positions.length) return undefined
-  const x = Math.min(...positions.map((position) => position.x))
-  const y = Math.min(...positions.map((position) => position.y))
-  const bounds = {
-    x,
-    y,
-    width: Math.max(...positions.map((position) => position.x)) - x + NODE_SIZE,
-    height: Math.max(...positions.map((position) => position.y)) - y + NODE_SIZE,
-  }
-  return getViewportForBounds(bounds, width, height, MIN_ZOOM, FOCUS_ZOOM, 0.1)
+  return getViewportForBounds(
+    boundsOf(positions),
+    width,
+    height,
+    canvasMinZoom(nodes, width, height),
+    FOCUS_ZOOM,
+    FIT_PADDING,
+  )
 }
 
 const EXPORT_IMAGE_WIDTH = 1920
@@ -344,6 +374,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
   const width = useStore((state) => state.width)
   const height = useStore((state) => state.height)
   const joinedBelowRef = useRef(new Map<string, string[]>())
+  const minZoom = useMemo(() => canvasMinZoom(nodes, width, height), [nodes, width, height])
   const focusNode = useCallback(
     (nodeId: string, graphNodes: Node[] = flow.getNodes()) => {
       const viewport = focusViewport(graphNodes, joinedBelowRef.current, nodeId, width, height)
@@ -410,7 +441,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
       onEdgesChange={onEdgesChange}
       nodesDraggable={!locked}
       nodeTypes={nodeTypes}
-      minZoom={MIN_ZOOM}
+      minZoom={minZoom}
     >
       <Background />
       <Controls showZoom={false} showFitView={false} showInteractive={false}>

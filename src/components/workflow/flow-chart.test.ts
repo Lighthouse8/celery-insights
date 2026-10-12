@@ -1,6 +1,6 @@
 import { createTask } from "@test-fixtures"
 import { MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
-import { focusViewport, getFlowGraph, hiddenJoinsNote } from "./flow-chart"
+import { canvasMinZoom, focusViewport, getFlowGraph, hiddenJoinsNote } from "./flow-chart"
 
 describe("getFlowGraph", () => {
   it("keeps nested channel and resource branches in separate rows", () => {
@@ -371,6 +371,37 @@ describe("getFlowGraph joined runs", () => {
     expect(centred.zoom).toBe(1)
     const [x, y] = onScreen("quiet", centred)
     expect([x + 32, y + 32]).toEqual([width / 2, height / 2])
+  })
+
+  it("zooms out as far as a tall joined-run subtree needs to frame it, and lets the canvas go that far", () => {
+    // Run A's 100 leaf children push run B about 10,000px below the joiner.
+    const joiner = createTask({ id: "joiner", joined_tasks: ["run-a", "run-b"] })
+    const runs = [
+      createTask({ id: "run-a", workflow_id: "nightly" }),
+      ...Array.from({ length: 100 }, (_, index) =>
+        createTask({ id: `leaf-${String(index).padStart(3, "0")}`, workflow_id: "nightly", parent_id: "run-a" }),
+      ),
+      createTask({ id: "run-b", workflow_id: "nightly" }),
+    ]
+    const graph = getFlowGraph([joiner], "joiner", undefined, {
+      ids: ["run-a", "run-b"],
+      total: 2,
+      tasks: runs,
+      walked: runs.map((task) => task.id),
+      cut: 0,
+    })
+    const [width, height] = [800, 400]
+
+    const viewport = focusViewport(graph.nodes, graph.joinedBelow, "joiner", width, height)!
+    for (const id of ["joiner", ...graph.joinedBelow.get("joiner")!]) {
+      const { x, y } = graph.nodes.find((node) => node.id === id)!.position
+      expect(y * viewport.zoom + viewport.y).toBeGreaterThanOrEqual(0)
+      expect((y + 64) * viewport.zoom + viewport.y).toBeLessThanOrEqual(height)
+      expect(x * viewport.zoom + viewport.x).toBeGreaterThanOrEqual(0)
+      expect((x + 64) * viewport.zoom + viewport.x).toBeLessThanOrEqual(width)
+    }
+    expect(viewport.zoom).toBeLessThan(0.1)
+    expect(canvasMinZoom(graph.nodes, width, height)).toBeLessThanOrEqual(viewport.zoom)
   })
 
   it("draws exactly the runs the read chose, even ones its members don't link to", () => {
