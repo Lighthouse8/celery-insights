@@ -2,6 +2,7 @@ import TaskNode, { JoinedTaskNode } from "@components/workflow/task-node"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@components/ui/tooltip"
 import { useIsDark } from "@hooks/use-is-dark"
 import type { Task } from "@/types/surreal-records"
+import { joinedRunIds, MAX_JOINED_RUNS } from "@lib/joined-runs"
 import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
 import { toSvg } from "html-to-image"
 import React, { useCallback, useEffect, useMemo, useState } from "react"
@@ -14,6 +15,7 @@ import {
   getViewportForBounds,
   MiniMap,
   type Node,
+  Panel,
   ReactFlow,
   useEdgesState,
   useNodesState,
@@ -71,6 +73,8 @@ export const getFlowGraph = (
 ): {
   nodes: Node[]
   edges: Edge[]
+  /** Joined runs left out of the view by the MAX_JOINED_RUNS bounds. */
+  hiddenJoinedRuns: number
 } => {
   const nodes: Node[] = []
   const edges: Edge[] = []
@@ -112,34 +116,54 @@ export const getFlowGraph = (
     return row
   }
 
-  // Joined runs belong to other workflows: drawn after the tree, never part of it.
+  // Joined runs belong to other workflows: drawn after the tree, never part of it. A view draws at most
+  // MAX_JOINED_RUNS dashed edges, and only the runs the task-workflow read loads (joinedRunIds).
+  let hiddenJoinedRuns = 0
   const addJoinedRuns = () => {
+    const { ids, total } = joinedRunIds(tasks)
+    const drawable = new Set(ids)
     const joinedById = new Map(joinedTasks.map((task) => [task.id, task]))
     const joinedNodes = new Map<string, Node>()
+    const nodeIds = new Set(nodes.map((node) => node.id))
+    // A member's own id may already look like a joined node id ("joined:<id>"); prefix again until it's free.
+    const joinedNodeId = (joinedId: string) => {
+      let nodeId = JOINED_NODE_PREFIX + joinedId
+      while (nodeIds.has(nodeId)) nodeId = JOINED_NODE_PREFIX + nodeId
+      nodeIds.add(nodeId)
+      return nodeId
+    }
+    let edgeBudget = MAX_JOINED_RUNS
     for (const node of nodes) {
       const task = node.data as unknown as Task
       // A "-replaced" duplicate shares its task; only the task's own node draws the joins.
       if (node.id !== task.id) continue
       for (const joinedId of task.joined_tasks ?? []) {
+        if (!edgeBudget) break
         if (visited.has(joinedId)) {
           edges.push(createJoinedEdge(task.id, joinedId))
+          edgeBudget--
           continue
         }
-        const nodeId = JOINED_NODE_PREFIX + joinedId
-        if (!joinedNodes.has(nodeId))
-          joinedNodes.set(nodeId, {
-            id: nodeId,
+        if (!drawable.has(joinedId)) continue
+        let joinedNode = joinedNodes.get(joinedId)
+        if (!joinedNode) {
+          joinedNode = {
+            id: joinedNodeId(joinedId),
             type: "joinedTaskNode",
             position: { x: node.position.x + COLUMN_WIDTH, y: nextLeafRow++ * ROW_HEIGHT },
             // A run that couldn't be loaded (never recorded, deleted, or not readable) stays a placeholder.
             data: { taskId: joinedId, task: joinedById.get(joinedId) },
             connectable: false,
             deletable: false,
-          })
-        edges.push(createJoinedEdge(task.id, nodeId))
+          }
+          joinedNodes.set(joinedId, joinedNode)
+        }
+        edges.push(createJoinedEdge(task.id, joinedNode.id))
+        edgeBudget--
       }
     }
     nodes.push(...joinedNodes.values())
+    hiddenJoinedRuns = total - joinedNodes.size
   }
 
   const rootTask = taskMap.get(rootTaskId)
@@ -153,6 +177,7 @@ export const getFlowGraph = (
   return {
     nodes: nodes,
     edges: edges,
+    hiddenJoinedRuns,
   }
 }
 
@@ -224,6 +249,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[])
   const [locked, setLocked] = useState<boolean>(true)
   const [isInitialized, setInitialized] = useState<boolean>(false)
+  const [hiddenJoinedRuns, setHiddenJoinedRuns] = useState(0)
   const isDark = useIsDark()
 
   const focusNode = useCallback(
@@ -247,6 +273,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
     const graph = getFlowGraph(tasks, rootTaskId, undefined, joinedTasks)
     setNodes(graph.nodes)
     setEdges(graph.edges)
+    setHiddenJoinedRuns(graph.hiddenJoinedRuns)
     if (!isInitialized && currentTaskId) {
       const node = graph.nodes.find((node) => node.id === currentTaskId)
       if (node)
@@ -341,6 +368,11 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
           </Tooltip>
         </ControlButton>
       </Controls>
+      {hiddenJoinedRuns > 0 && (
+        <Panel position="bottom-center" className="text-xs text-muted-foreground">
+          {hiddenJoinedRuns} more joined run{hiddenJoinedRuns === 1 ? "" : "s"} not shown
+        </Panel>
+      )}
       <MiniMap
         position="top-right"
         style={{ backgroundColor: bgColor, height: 100, width: 200 }}

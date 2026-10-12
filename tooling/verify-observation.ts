@@ -4,6 +4,7 @@ import { initializeAuthentication } from "../runtime/security/http"
 import { scopedDatabase, intersectScopes } from "../runtime/security/read-scope"
 import { SearchIndexes } from "../runtime/search-indexes"
 import { buildRead, operations } from "../runtime/observation/queries"
+import { joinedRunIds } from "../src/lib/joined-runs"
 import assert from "node:assert/strict"
 import { createServer } from "node:net"
 import { randomBytes } from "node:crypto"
@@ -210,6 +211,30 @@ try {
   assert.equal(withoutProgress[0].progress, undefined)
   const [hidden] = await scoped.query<[unknown[]]>("SELECT * FROM type::record('task', $taskId)", { taskId: "hidden" })
   assert.deepEqual(hidden, [])
+  // Point reads project the record itself; among many rows they must return exactly what a table scan would.
+  await root.query(
+    "FOR $i IN 0..40 { CREATE type::record('task', 'bulk_' + <string>$i) SET type = 'bulk', state = 'SUCCESS', workflow_id = 'bulk', result = 'bulk-result', args = 'bulk-args', last_updated = time::now(); CREATE type::record('event', 'bulk_' + <string>$i) SET task_id = 'bulk_' + <string>$i, event_type = 'task-succeeded', timestamp = time::now(); }",
+  )
+  const pointRead = async (db: Pick<Surreal, "query">, table: string, id: string) =>
+    (await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM type::record('${table}', $id)`, { id }))[0]
+  const payloadScope = scopedDatabase(root, { deny_fields: ["task.result.read"] })
+  const [payloadRead] = await pointRead(payloadScope, "task", "bulk_7")
+  assert.equal(String(payloadRead.id), "task:bulk_7")
+  assert.equal(payloadRead.args, "bulk-args")
+  assert.equal(payloadRead.result, undefined)
+  assert.deepEqual(payloadRead.restricted_fields, ["task.result.read"])
+  assert.equal(payloadRead.workflow_id, "bulk")
+  assert.deepEqual(await pointRead(payloadScope, "task", "bulk_missing"), [])
+  const rowScope = scopedDatabase(root, { task_ids: ["bulk_3"], deny_fields: ["task.input.read"] })
+  const [rowRead] = await pointRead(rowScope, "task", "bulk_3")
+  assert.equal(String(rowRead.id), "task:bulk_3")
+  assert.equal(rowRead.result, "bulk-result")
+  assert.equal(rowRead.args, undefined)
+  assert.equal(rowRead.workflow_id, undefined)
+  assert.deepEqual(await pointRead(rowScope, "task", "bulk_4"), [])
+  assert.equal((await pointRead(rowScope, "event", "bulk_3")).length, 1)
+  assert.deepEqual(await pointRead(rowScope, "event", "bulk_4"), [])
+  await root.query("DELETE task WHERE type = 'bulk'; DELETE event WHERE string::starts_with(task_id, 'bulk_');")
   const [counts, events, workflows, search] = await scoped.query<[unknown[], unknown[], unknown[], unknown[]]>(
     "SELECT count() AS count FROM task GROUP ALL; SELECT * FROM event; SELECT * FROM workflow; SELECT * FROM task WHERE string::contains(result ?? '', 'private-result');",
   )
@@ -263,6 +288,23 @@ try {
   )
   assert.equal(payloadJoined[0].result, undefined)
   assert.deepEqual(await joinedRuns(scoped), [], "task scopes hide joined runs like other relationships")
+  // The read loads the same capped, ordered joined runs the flowchart draws.
+  await root.query(
+    "FOR $i IN 0..105 { CREATE type::record('task', 'pool_' + <string>(1000 + $i)) SET state = 'STARTED', workflow_id = 'pool', last_updated = time::now(); }; UPDATE task:sample SET joined_tasks = array::concat(['sample'], array::reverse((SELECT VALUE record::id(id) FROM task WHERE workflow_id = 'pool')));",
+  )
+  const pooled = (await root.query(workflowRead.sql, workflowRead.bindings).collect()).at(-1) as {
+    members: Array<{ id: unknown; joined_tasks?: string[] }>
+    joined: Array<{ id: unknown }>
+  }
+  const expectedJoined = joinedRunIds(
+    pooled.members.map((member) => ({ ...member, id: String(member.id).replace(/^task:/, "") })),
+  )
+  assert.equal(expectedJoined.total, 105)
+  assert.deepEqual(
+    pooled.joined.map((task) => String(task.id)),
+    expectedJoined.ids.map((id) => `task:${id}`),
+  )
+  await root.query("DELETE task WHERE workflow_id = 'pool'")
   await root.query("UPDATE task:sample SET joined_tasks = NONE")
   await root.query(
     "UPDATE task:sample SET args = 'private-input', kwargs = 'private-kwargs', exception = 'private-failure', traceback = 'private-traceback'; UPDATE worker:sample SET inspect = $inspect;",
