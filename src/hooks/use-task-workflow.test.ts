@@ -63,4 +63,30 @@ describe("useTaskWorkflow", () => {
 
     expect(result.current.task?.state).toBe("SUCCESS")
   })
+
+  it("returns joined runs apart from the members and refreshes when one changes", async () => {
+    mockQuery.mockImplementation(async (query: string) =>
+      query.startsWith("LIVE")
+        ? ["live-uuid"]
+        : [
+            null,
+            null,
+            {
+              task: { id: "task:root", workflow_id: "root", joined_tasks: ["other"] },
+              workflow: null,
+              members: [{ id: "task:root", workflow_id: "root", joined_tasks: ["other"] }],
+              joined: [{ id: "task:other", workflow_id: "other" }],
+            },
+          ],
+    )
+    const { result } = renderHook(() => useTaskWorkflow("root"))
+    await waitFor(() => expect(result.current.joined).toHaveLength(1))
+    expect(result.current.members.map((member) => member.id)).toEqual(["task:root"])
+
+    act(() => emit({ value: { id: "task:other", workflow_id: "other" } }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(snapshotCalls()).toBe(2)
+  })
 })

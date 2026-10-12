@@ -88,7 +88,7 @@ export function scopedDatabase(db: Pick<Surreal, "query">, scope: ReadScope): Pi
       : "progress",
     `${JSON.stringify(scope.deny_fields)} AS restricted_fields`,
     `${taskScoped(scope)} AS relationships_restricted`,
-    ...(!taskScoped(scope) ? ["root_id,parent_id,workflow_id,children"] : ["[] AS children"]),
+    ...(!taskScoped(scope) ? ["root_id,parent_id,workflow_id,children,joined_tasks"] : ["[] AS children"]),
     ...(!denied.has("task.input.read") ? ["args,kwargs"] : []),
     ...(!denied.has("task.result.read") ? ["result,result_truncated"] : []),
     ...(!denied.has("task.failure.read") ? ["exception,traceback"] : []),

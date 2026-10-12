@@ -244,8 +244,10 @@ function compileRead(input: ReadRequest): { sql: string; bindings: Record<string
       bindings,
     }
   if (p.operation === "task-workflow")
+    // Joined runs (task-joined events) belong to other workflows. Each is read by id through type::record,
+    // so a restricted scope applies to it as it does to the task itself.
     return {
-      sql: `LET $task = (SELECT * FROM type::record('task',$taskId) TIMEOUT 2s)[0];LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId;RETURN {task:$task,workflow:(SELECT * FROM type::record('workflow',$workflowId) TIMEOUT 2s)[0],members:SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC LIMIT 1000 TIMEOUT 2s};`,
+      sql: `LET $task = (SELECT * FROM type::record('task',$taskId) TIMEOUT 2s)[0];LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId;LET $members = SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC LIMIT 1000 TIMEOUT 2s;LET $joinedIds = array::slice(array::distinct(array::filter(array::flatten($members.joined_tasks),|$id| $id != NONE)),0,100);RETURN {task:$task,workflow:(SELECT * FROM type::record('workflow',$workflowId) TIMEOUT 2s)[0],members:$members,joined:array::filter(array::map($joinedIds,|$id| (SELECT * FROM type::record('task',$id) TIMEOUT 2s)[0]),|$joined| $joined != NONE)};`,
       bindings,
     }
   if (p.operation === "home")

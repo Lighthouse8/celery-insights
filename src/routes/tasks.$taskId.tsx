@@ -7,6 +7,7 @@ import Panel from "@components/common/panel"
 import TaskAlerts from "@components/task/alerts/task-alerts"
 import TaskAvatar from "@components/task/task-avatar"
 import TaskExecutionPanel from "@components/task/task-execution-panel"
+import JoinedRuns from "@components/task/joined-runs"
 import TaskLifetimeChart from "@components/task/task-lifetime-chart"
 import TaskPageHeader from "@components/task/task-page-header"
 import { Skeleton } from "@components/ui/skeleton"
@@ -116,6 +117,7 @@ const RelatedTasksPanel = ({ currentTask, members }: { currentTask: Task; member
               {children.length ? children.map((task) => <TaskLink key={task.id} task={task} />) : "---"}
             </div>
           </div>
+          <JoinedRuns taskIds={currentTask.joined_tasks} />
           <div>
             <p className="mb-1 text-xs font-medium uppercase text-muted-foreground">Notable siblings</p>
             <div className="flex flex-wrap gap-2">
@@ -130,10 +132,11 @@ const RelatedTasksPanel = ({ currentTask, members }: { currentTask: Task; member
 
 const TaskPage = () => {
   const { taskId } = Route.useParams()
-  const { task: surrealTask, workflow: surrealWorkflow, members, isLoading, error } = useTaskWorkflow(taskId)
+  const { task: surrealTask, workflow: surrealWorkflow, members, joined, isLoading, error } = useTaskWorkflow(taskId)
   const task = useMemo(() => (surrealTask ? parseTask(surrealTask) : undefined), [surrealTask])
   const workflow = useMemo(() => (surrealWorkflow ? parseWorkflow(surrealWorkflow) : undefined), [surrealWorkflow])
   const parsedMembers = useMemo(() => members.map(parseTask), [members])
+  const joinedTasks = useMemo(() => joined.map(parseTask), [joined])
   const [chartType, setChartType] = React.useState<WorkflowChartType>(WorkflowChartType.FLOWCHART)
   useTourChangeStepOnLoad(2, task !== undefined)
 
@@ -169,6 +172,7 @@ const TaskPage = () => {
               workflowId={task.workflow_id || task.root_id || task.id}
               rootTaskId={workflow?.root_task_id || task.root_id || task.id}
               currentTaskId={task.id}
+              joinedTasks={joinedTasks}
             />
           ) : (
             <Skeleton className="h-[450px] w-full" />

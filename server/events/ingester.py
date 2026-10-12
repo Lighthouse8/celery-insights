@@ -17,6 +17,12 @@ PROGRESS_EVENT_TYPE = "task-progress"
 PROGRESS_DESCRIPTION_MAX_LENGTH = 200
 # Larger numbers lose precision in SurrealDB and JavaScript, and math.isfinite overflows on huge ints.
 PROGRESS_MAX_NUMBER = 2**53
+# Custom event a task sends with ``self.send_event("task-joined", task_ids=[...])`` when it joins an
+# already active run instead of sending its own.
+JOINED_EVENT_TYPE = "task-joined"
+JOINED_TASKS_MAX = 100
+# Matches the longest task id the read API accepts.
+JOINED_TASK_ID_MAX_LENGTH = 256
 
 TERMINAL_EVENT_TYPES = frozenset({"task-succeeded", "task-failed", "task-revoked", "task-rejected"})
 TERMINAL_TASK_STATES = ("SUCCESS", "FAILURE", "REVOKED", "REJECTED", "IGNORED")
@@ -241,6 +247,13 @@ class SurrealDBIngester:
                 if event_type == PROGRESS_EVENT_TYPE:
                     # Progress never changes state or workflow membership, so it skips the summary recompute.
                     q, p = build_task_progress_update(event, i)
+                    if q:
+                        event_queries.append(q)
+                        event_params.update(p)
+
+                elif event_type == JOINED_EVENT_TYPE:
+                    # A join never changes state or workflow membership, so it skips the summary recompute.
+                    q, p = build_task_joined_update(event, i)
                     if q:
                         event_queries.append(q)
                         event_params.update(p)
@@ -562,6 +575,34 @@ def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
     query = (
         f"UPDATE type::record('task', ${p}_id) SET progress = "
         f"IF {accept} THEN {{ {', '.join(fields)} }} ELSE progress END"
+    )
+    return query, params
+
+
+def build_task_joined_update(event: dict, idx: int) -> tuple[str, dict]:
+    """Build an UPDATE that adds the runs a task joined to its record.
+
+    UPDATE never creates a record, so a join reported by a task Celery Insights has not seen is dropped
+    instead of failing the batch on the schema's required task fields.
+    """
+    task_id = event.get("uuid")
+    reported = event.get("task_ids")
+    if not task_id or not isinstance(reported, list):
+        return "", {}
+    valid = (
+        joined_id
+        for joined_id in reported
+        if isinstance(joined_id, str) and 0 < len(joined_id) <= JOINED_TASK_ID_MAX_LENGTH and joined_id != task_id
+    )
+    joined = list(dict.fromkeys(valid))[:JOINED_TASKS_MAX]
+    if not joined:
+        return "", {}
+
+    p = f"jn{idx}"
+    params = {f"{p}_id": task_id, f"{p}_ids": joined}
+    query = (
+        f"UPDATE type::record('task', ${p}_id) SET "
+        f"joined_tasks = array::slice(array::union(joined_tasks ?? [], ${p}_ids), 0, {JOINED_TASKS_MAX})"
     )
     return query, params
 

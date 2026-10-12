@@ -422,3 +422,47 @@ async def test_new_attempt_clears_progress_tagged_with_an_earlier_attempt(
     )
     assert job["retries"] == 2
     assert job.get("progress") is None
+
+
+@pytest.mark.asyncio
+async def test_joined_runs_accumulate_on_the_joining_task(
+    surreal_db: AsyncWsSurrealConnection, mocker: MockerFixture
+) -> None:
+    mocker.patch("events.ingester.get_db", return_value=surreal_db)
+    ingester = SurrealDBIngester(asyncio.Queue())
+
+    async def rows(sql: str) -> list[dict]:
+        return cast(list[dict], await surreal_db.query(sql))
+
+    async def ingest(*events: dict) -> dict:
+        ingester._buffer = list(events)
+        await ingester._flush()
+        assert ingester._buffer == [], "flush failed and re-queued the batch"
+        return (await rows("SELECT * FROM task:parent"))[0]
+
+    def joined(*task_ids: object, uuid: str = "parent") -> dict:
+        return {"type": "task-joined", "uuid": uuid, "timestamp": 1700000002.0, "task_ids": list(task_ids)}
+
+    parent = await ingest(
+        {"type": "task-sent", "uuid": "parent", "timestamp": 1700000000.0, "name": "reports.refresh"},
+        {"type": "task-started", "uuid": "parent", "timestamp": 1700000001.0},
+        joined("run-1"),
+        joined("run-2", "run-1", "", 7),
+        # A join reported by a task without a record is dropped; the rest of the batch still commits.
+        joined("run-9", uuid="unknown"),
+    )
+    assert parent["state"] == "STARTED"
+    assert parent["joined_tasks"] == ["run-1", "run-2"]
+    assert await rows("SELECT * FROM task:unknown") == []
+    assert len(await rows("SELECT * FROM event WHERE event_type = 'task-joined'")) == 3
+    workflow = (await rows("SELECT * FROM workflow:parent"))[0]
+    assert workflow["task_count"] == 1
+    assert len(await rows("SELECT * FROM workflow_task")) == 1
+
+    parent = await ingest(joined("run-2", *(f"more-{n}" for n in range(120))))
+    assert len(parent["joined_tasks"]) == 100
+    assert parent["joined_tasks"][:3] == ["run-1", "run-2", "more-0"]
+
+    parent = await ingest(joined("late"))
+    assert "late" not in parent["joined_tasks"]
+    assert parent["state"] == "STARTED"

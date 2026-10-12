@@ -285,6 +285,19 @@ describe("getLayoutKey", () => {
       getLayoutKey([{ ...root, children: ["a", "b"] }], "root"),
     )
   })
+
+  it("changes when a member's joined runs change or a joined run loads, not when one changes state", () => {
+    const joining = { ...child, joined_tasks: ["elsewhere"] }
+    const elsewhere = createTask({ id: "elsewhere", workflow_id: "other", state: TaskState.STARTED })
+    const base = getLayoutKey([root, joining], "root", [elsewhere])
+
+    expect(getLayoutKey([root, { ...joining, joined_tasks: ["elsewhere", "more"] }], "root", [elsewhere])).not.toBe(
+      base,
+    )
+    expect(getLayoutKey([root, child], "root", [elsewhere])).not.toBe(base)
+    expect(getLayoutKey([root, joining], "root")).not.toBe(base)
+    expect(getLayoutKey([root, joining], "root", [{ ...elsewhere, state: TaskState.SUCCESS }])).toBe(base)
+  })
 })
 
 describe("refreshNodeData", () => {
@@ -302,5 +315,64 @@ describe("refreshNodeData", () => {
     const node = refreshed.find((candidate) => candidate.id === "import-replaced")
     expect(node?.data).toBe(updated)
     expect(node?.position).toEqual(nodes.find((candidate) => candidate.id === "import-replaced")?.position)
+  })
+
+  it("swaps in a joined run's latest record without moving its node", () => {
+    const root = createTask({ id: "root", joined_tasks: ["elsewhere", "missing"] })
+    const elsewhere = createTask({ id: "elsewhere", workflow_id: "other", state: TaskState.STARTED })
+    const { nodes } = getFlowGraph([root], "root", undefined, [elsewhere])
+    const finished = { ...elsewhere, state: TaskState.SUCCESS }
+
+    const refreshed = refreshNodeData(nodes, [root], [finished])
+
+    const node = refreshed.find((candidate) => candidate.id === "joined:elsewhere")
+    expect(node?.data).toEqual({ taskId: "elsewhere", task: finished })
+    expect(node?.position).toEqual(nodes.find((candidate) => candidate.id === "joined:elsewhere")?.position)
+    expect(refreshed.find((candidate) => candidate.id === "joined:missing")).toBe(
+      nodes.find((candidate) => candidate.id === "joined:missing"),
+    )
+    expect(refreshed.find((candidate) => candidate.id === "root")).toBe(
+      nodes.find((candidate) => candidate.id === "root"),
+    )
+  })
+})
+
+describe("getFlowGraph joined runs", () => {
+  const root = createTask({ id: "root", joined_tasks: ["elsewhere", "missing"] })
+  const child = createTask({ id: "child", parent_id: "root", joined_tasks: ["elsewhere", "root"] })
+  const elsewhere = createTask({ id: "elsewhere", workflow_id: "other" })
+
+  it("draws joined runs as dashed extra nodes outside the workflow tree", () => {
+    const { nodes, edges } = getFlowGraph([root, child], "root", undefined, [elsewhere])
+
+    const joinedNodes = nodes.filter((node) => node.type === "joinedTaskNode")
+    expect(joinedNodes.map((node) => node.id)).toEqual(["joined:elsewhere", "joined:missing"])
+    expect(joinedNodes[0].data).toEqual({ taskId: "elsewhere", task: elsewhere })
+    // A run that can't be loaded stays as a placeholder with only its id.
+    expect(joinedNodes[1].data).toEqual({ taskId: "missing", task: undefined })
+    expect(nodes.filter((node) => node.type === "taskNode").map((node) => node.id)).toEqual(["root", "child"])
+
+    const dashed = edges.filter((edge) => edge.style?.strokeDasharray)
+    expect(dashed.map((edge) => [edge.source, edge.target])).toEqual([
+      ["root", "joined:elsewhere"],
+      ["root", "joined:missing"],
+      ["child", "joined:elsewhere"],
+      ["child", "root"],
+    ])
+    expect(edges.find((edge) => edge.id === "root>child")?.style).toBeUndefined()
+  })
+
+  it("keeps joined nodes off the rows of the tree", () => {
+    const { nodes } = getFlowGraph([root, child], "root", undefined, [elsewhere])
+    const treeRows = new Set(nodes.filter((node) => node.type === "taskNode").map((node) => node.position.y))
+
+    for (const node of nodes.filter((candidate) => candidate.type === "joinedTaskNode"))
+      expect(treeRows.has(node.position.y)).toBe(false)
+  })
+
+  it("draws nothing extra without joins", () => {
+    const { nodes, edges } = getFlowGraph([createTask({ id: "root" })], "root", undefined, [elsewhere])
+    expect(nodes).toHaveLength(1)
+    expect(edges).toHaveLength(0)
   })
 })

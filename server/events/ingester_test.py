@@ -10,6 +10,7 @@ from events.ingester import (
     SurrealDBIngester,
     build_children_update,
     build_raw_event,
+    build_task_joined_update,
     build_task_progress_update,
     build_task_upsert,
     build_workflow_membership_upsert,
@@ -282,6 +283,47 @@ class TestBuildTaskProgressUpdate:
         assert "progress" not in query
 
 
+class TestBuildTaskJoinedUpdate:
+    def test_adds_joined_ids_as_a_set(self):
+        query, params = build_task_joined_update(
+            {
+                "type": "task-joined",
+                "uuid": "parent",
+                "timestamp": 1700000000.0,
+                "task_ids": ["run-1", "run-2", "run-1"],
+            },
+            3,
+        )
+
+        assert query == (
+            "UPDATE type::record('task', $jn3_id) SET "
+            "joined_tasks = array::slice(array::union(joined_tasks ?? [], $jn3_ids), 0, 100)"
+        )
+        assert params == {"jn3_id": "parent", "jn3_ids": ["run-1", "run-2"]}
+
+    def test_skips_invalid_ids_and_caps_the_list(self):
+        reported = ["", 7, None, ["nested"], {"id": "x"}, "x" * 257, "parent", *(f"run-{n}" for n in range(150))]
+        _, params = build_task_joined_update(
+            {"type": "task-joined", "uuid": "parent", "timestamp": 1700000000.0, "task_ids": reported}, 0
+        )
+
+        assert params["jn0_ids"] == [f"run-{n}" for n in range(100)]
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {},
+            {"task_ids": "run-1"},
+            {"task_ids": []},
+            {"task_ids": ["", None]},
+            {"uuid": None, "task_ids": ["run-1"]},
+        ],
+    )
+    def test_ignores_reports_without_usable_ids(self, fields):
+        event = {"type": "task-joined", "uuid": "parent", "timestamp": 1700000000.0, **fields}
+        assert build_task_joined_update(event, 0) == ("", {})
+
+
 class TestBuildChildrenUpdate:
     def test_task_received_with_parent(self):
         event = {
@@ -507,6 +549,21 @@ class TestSurrealDBIngester:
 
         query_str = mock_db.query_raw.call_args[0][0]
         assert "UPDATE type::record('task', $pg0_id) SET progress" in query_str
+        assert "CREATE event SET" in query_str
+        assert "UPSERT" not in query_str
+        assert "RELATE" not in query_str
+
+    @pytest.mark.asyncio
+    async def test_flush_joined_skips_state_and_workflow_writes(self, mock_db, queue):
+        ingester = SurrealDBIngester(queue)
+        ingester._buffer = [
+            {"type": "task-joined", "uuid": "abc", "timestamp": 1700000000.0, "task_ids": ["run-1"]},
+        ]
+
+        await ingester._flush()
+
+        query_str = mock_db.query_raw.call_args[0][0]
+        assert "UPDATE type::record('task', $jn0_id) SET joined_tasks" in query_str
         assert "CREATE event SET" in query_str
         assert "UPSERT" not in query_str
         assert "RELATE" not in query_str

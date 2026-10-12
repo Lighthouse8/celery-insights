@@ -58,6 +58,7 @@ describe("DEMO_SCHEMA", () => {
       "workflow_id",
       "parent_id",
       "children",
+      "joined_tasks",
       "worker",
       "result",
       "result_truncated",
