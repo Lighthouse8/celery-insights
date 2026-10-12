@@ -1,6 +1,6 @@
 import { createTask } from "@test-fixtures"
 import { joinedRunIds, MAX_JOINED_RUNS } from "@lib/joined-runs"
-import { getFlowGraph } from "./flow-chart"
+import { getFlowGraph, hiddenJoinsNote } from "./flow-chart"
 
 describe("getFlowGraph", () => {
   it("keeps nested channel and resource branches in separate rows", () => {
@@ -313,11 +313,19 @@ describe("getFlowGraph joined runs", () => {
       ),
     ]
 
-    const { nodes, edges, hiddenJoinedRuns } = getFlowGraph(tasks, "root")
+    const { nodes, edges, hiddenJoinedRuns, hiddenJoinLinks } = getFlowGraph(tasks, "root")
 
     expect(nodes.filter((node) => node.type === "joinedTaskNode")).toHaveLength(1)
     expect(edges.filter((edge) => edge.style?.strokeDasharray)).toHaveLength(MAX_JOINED_RUNS)
     expect(hiddenJoinedRuns).toBe(0)
+    expect(hiddenJoinLinks).toBe(300 - MAX_JOINED_RUNS)
+    expect(hiddenJoinsNote(hiddenJoinedRuns, hiddenJoinLinks)).toBe("200 join links not shown")
+  })
+
+  it("notes left-out joined runs and join links together", () => {
+    expect(hiddenJoinsNote(0, 0)).toBeUndefined()
+    expect(hiddenJoinsNote(1, 0)).toBe("1 more joined run not shown")
+    expect(hiddenJoinsNote(50, 1)).toBe("50 more joined runs and 1 join link not shown")
   })
 
   it("gives joined nodes ids no member node has", () => {
