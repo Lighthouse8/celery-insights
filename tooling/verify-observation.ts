@@ -4,7 +4,7 @@ import { initializeAuthentication } from "../runtime/security/http"
 import { scopedDatabase, intersectScopes } from "../runtime/security/read-scope"
 import { SearchIndexes } from "../runtime/search-indexes"
 import { buildRead, operations } from "../runtime/observation/queries"
-import { joinedRunIds } from "../src/lib/joined-runs"
+import { MAX_JOINED_RUNS } from "../src/lib/joined-runs"
 import assert from "node:assert/strict"
 import { createServer } from "node:net"
 import { randomBytes } from "node:crypto"
@@ -260,12 +260,19 @@ try {
     await scoped.query(read.sql, read.bindings)
   }
   // Joined runs belong to other workflows and are read through the same scoped projection as members.
-  await root.query("UPDATE task:sample SET joined_tasks = ['hidden', 'ghost']")
-  const workflowRead = buildRead({ operation: "task-workflow", taskId: "sample" })
-  const joinedRuns = async (db: Pick<Surreal, "query">) => {
-    const results = await db.query(workflowRead.sql, workflowRead.bindings).collect()
-    return (results.at(-1) as { joined: Array<Record<string, unknown>> }).joined
+  type WorkflowRead = {
+    members: unknown[]
+    joined: Array<Record<string, unknown>>
+    joinedIds: string[]
+    joinedTotal: number
   }
+  const workflowRead = buildRead({ operation: "task-workflow", taskId: "sample" })
+  const readWorkflow = async (db: Pick<Surreal, "query">, read = workflowRead) =>
+    (await db.query(read.sql, read.bindings).collect()).at(-1) as WorkflowRead
+  const unjoined = await readWorkflow(root)
+  assert.deepEqual([unjoined.joinedIds, unjoined.joinedTotal, unjoined.joined], [[], 0, []], "no joins, no lookups")
+  await root.query("UPDATE task:sample SET joined_tasks = ['hidden', 'ghost']")
+  const joinedRuns = async (db: Pick<Surreal, "query">) => (await readWorkflow(db)).joined
   const allJoined = await joinedRuns(root)
   assert.deepEqual(
     allJoined.map((task) => String(task.id)),
@@ -280,41 +287,34 @@ try {
   )
   assert.equal(payloadJoined[0].result, undefined)
   assert.deepEqual(await joinedRuns(scoped), [], "task scopes hide joined runs like other relationships")
-  // The read loads the same capped, ordered joined runs the flowchart draws.
-  await root.query(
-    "FOR $i IN 0..105 { CREATE type::record('task', 'pool_' + <string>(1000 + $i)) SET state = 'STARTED', workflow_id = 'pool', last_updated = time::now(); }; UPDATE task:sample SET joined_tasks = array::concat(['sample'], array::reverse((SELECT VALUE record::id(id) FROM task WHERE workflow_id = 'pool')));",
-  )
-  const pooled = (await root.query(workflowRead.sql, workflowRead.bindings).collect()).at(-1) as {
-    members: Array<{ id: unknown; joined_tasks?: string[] }>
-    joined: Array<{ id: unknown }>
-  }
-  const expectedJoined = joinedRunIds(
-    pooled.members.map((member) => ({ ...member, id: String(member.id).replace(/^task:/, "") })),
-  )
-  assert.equal(expectedJoined.total, 105)
+  assert.deepEqual((await readWorkflow(scoped)).joinedIds, [])
+  const ghosted = await readWorkflow(root)
   assert.deepEqual(
-    pooled.joined.map((task) => String(task.id)),
-    expectedJoined.ids.map((id) => `task:${id}`),
+    [ghosted.joinedIds, ghosted.joinedTotal],
+    [["ghost", "hidden"], 2],
+    "chosen ids keep unloadable runs",
   )
-  await root.query("DELETE task WHERE workflow_id = 'pool'")
-  // Joined runs come from every member, not only the 1,000 most recent the read returns.
+  // The read chooses the joined runs a view shows: the first ids in id order over every member, members left out.
+  // 1,001 members put the oldest past the 1,000 the read returns. (The graph's 10,000-member view is covered in
+  // flow-chart.test.ts: seeding 10,001 tasks that share an indexed workflow_id takes minutes in SurrealDB 3.3.0.)
+  const bIds = Array.from({ length: MAX_JOINED_RUNS }, (_, index) => `b_${String(index).padStart(3, "0")}`)
   await root.query(
-    "FOR $i IN 0..1001 { CREATE type::record('task', 'big_' + <string>(10000 + $i)) SET state = 'SUCCESS', workflow_id = 'big', last_updated = d'2020-01-01T00:00:00Z' + <duration>(<string>$i + 's'); }; UPDATE task:big_10000 SET joined_tasks = ['hidden', 'big_10500'];",
+    "CREATE task:a_run SET state = 'SUCCESS', workflow_id = 'other', last_updated = time::now(); FOR $i IN 0..1001 { CREATE type::record('task', 'big_' + <string>(10000 + $i)) SET state = 'SUCCESS', workflow_id = 'big', last_updated = d'2020-01-01T00:00:00Z' + <duration>(<string>$i + 's'); }; UPDATE task:big_10000 SET joined_tasks = ['a_run', 'big_10500']; UPDATE task:big_11000 SET joined_tasks = $bIds;",
+    { bIds },
   )
-  const bigRead = buildRead({ operation: "task-workflow", taskId: "big_10999" })
+  const bigRead = buildRead({ operation: "task-workflow", taskId: "big_11000" })
   for (const db of [root, scopedDatabase(root, { deny_fields: ["task.result.read"] })]) {
-    const big = (await db.query(bigRead.sql, bigRead.bindings).collect()).at(-1) as {
-      members: unknown[]
-      joined: Array<{ id: unknown }>
-    }
+    const big = await readWorkflow(db, bigRead)
     assert.equal(big.members.length, 1000)
+    // The oldest member, beyond the members returned, still competes for the first ids.
+    assert.deepEqual(big.joinedIds, ["a_run", ...bIds.slice(0, -1)])
+    assert.equal(big.joinedTotal, MAX_JOINED_RUNS + 1)
     assert.deepEqual(
       big.joined.map((task) => String(task.id)),
-      ["task:hidden"],
-      "the oldest member's joined run loads and a joined member is not a joined run",
+      ["task:a_run"],
     )
   }
-  await root.query("DELETE task WHERE workflow_id = 'big'")
+  await root.query("DELETE task WHERE workflow_id = 'big'; DELETE task:a_run;")
   await root.query("UPDATE task:sample SET joined_tasks = NONE")
   await root.query(
     "UPDATE task:sample SET args = 'private-input', kwargs = 'private-kwargs', exception = 'private-failure', traceback = 'private-traceback'; UPDATE worker:sample SET inspect = $inspect;",

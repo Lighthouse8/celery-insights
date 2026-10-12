@@ -245,11 +245,12 @@ function compileRead(input: ReadRequest): { sql: string; bindings: Record<string
       bindings,
     }
   if (p.operation === "task-workflow")
-    // Joined runs (task-joined events) belong to other workflows. Each is read by id through type::record,
-    // so a restricted scope applies to it as it does to the task itself. The ids match joinedRunIds over every
-    // member, not just the members this read returns, as the graph's member list is longer.
+    // Joined runs (task-joined events) belong to other workflows. This read alone chooses which a view shows: the
+    // first MAX_JOINED_RUNS non-member ids over every member (the returned members stop at 1,000), from one id-only
+    // select. Each chosen run is read by id through type::record, so a restricted scope applies to it as it does to
+    // the task itself; joinedIds keeps the ones it couldn't load.
     return {
-      sql: `LET $task = (SELECT * FROM type::record('task',$taskId) TIMEOUT 2s)[0];LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId;LET $members = SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC LIMIT 1000 TIMEOUT 2s;LET $joinedCandidates = array::distinct(array::flatten(SELECT VALUE joined_tasks FROM task WHERE workflow_id = $workflowId AND joined_tasks != NONE TIMEOUT 2s));LET $joinedIds = array::slice(array::sort(array::complement($joinedCandidates,SELECT VALUE record::id(id) FROM task WHERE workflow_id = $workflowId AND record::id(id) IN $joinedCandidates TIMEOUT 2s)),0,${MAX_JOINED_RUNS});RETURN {task:$task,workflow:(SELECT * FROM type::record('workflow',$workflowId) TIMEOUT 2s)[0],members:$members,joined:array::filter(array::map($joinedIds,|$id| (SELECT * FROM type::record('task',$id) TIMEOUT 2s)[0]),|$joined| $joined != NONE)};`,
+      sql: `LET $task = (SELECT * FROM type::record('task',$taskId) TIMEOUT 2s)[0];LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId;LET $members = SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC LIMIT 1000 TIMEOUT 2s;LET $links = SELECT record::id(id) AS task_id,joined_tasks FROM task WHERE workflow_id = $workflowId TIMEOUT 2s;LET $joinedCandidates = array::sort(array::complement(array::distinct(array::filter(array::flatten($links.joined_tasks),|$id| $id != NONE)),$links.task_id));LET $joinedIds = array::slice($joinedCandidates,0,${MAX_JOINED_RUNS});RETURN {task:$task,workflow:(SELECT * FROM type::record('workflow',$workflowId) TIMEOUT 2s)[0],members:$members,joinedIds:$joinedIds,joinedTotal:array::len($joinedCandidates),joined:array::filter(array::map($joinedIds,|$id| (SELECT * FROM type::record('task',$id) TIMEOUT 2s)[0]),|$joined| $joined != NONE)};`,
       bindings,
     }
   if (p.operation === "home")

@@ -1,7 +1,8 @@
 import FlowChart from "@components/workflow/flow-chart"
 import TimelineChart from "@components/workflow/timeline-chart"
 import { useWorkflowTasks } from "@hooks/use-live-tasks"
-import { parseTask, type Task } from "@/types/surreal-records"
+import { parseTask } from "@/types/surreal-records"
+import type { JoinedRuns } from "@lib/joined-runs"
 import React, { useDeferredValue, useMemo } from "react"
 import { ReactFlowProvider } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
@@ -17,7 +18,7 @@ interface WorkflowGraphProps {
   currentTaskId?: string
   chartType: WorkflowChartType
   /** Runs from other workflows that members joined; drawn in the flowchart only. */
-  joinedTasks?: Task[]
+  joinedRuns?: JoinedRuns
 }
 
 const WorkflowGraph: React.FC<WorkflowGraphProps> = ({
@@ -25,7 +26,7 @@ const WorkflowGraph: React.FC<WorkflowGraphProps> = ({
   workflowId,
   rootTaskId,
   currentTaskId,
-  joinedTasks,
+  joinedRuns,
 }) => {
   const { data: surrealTasks } = useWorkflowTasks(workflowId)
   const workflowTasks = useMemo(() => surrealTasks.map(parseTask), [surrealTasks])
@@ -39,7 +40,7 @@ const WorkflowGraph: React.FC<WorkflowGraphProps> = ({
             tasks={deferredTasks}
             rootTaskId={rootTaskId}
             currentTaskId={currentTaskId}
-            joinedTasks={joinedTasks}
+            joinedRuns={joinedRuns}
           />
         </ReactFlowProvider>
       )
