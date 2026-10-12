@@ -449,6 +449,28 @@ describe("getFlowGraph joined runs", () => {
       expect(node("joined:cut-run")).toBeUndefined()
     })
 
+    it("keeps the joined-run look on a joined run another expansion reaches first as a child", () => {
+      const joiner = createTask({ id: "root", joined_tasks: ["a", "b"] })
+      const a = createTask({ id: "a", workflow_id: "other", children: ["b"] })
+      const b = createTask({ id: "b", workflow_id: "other", parent_id: "a" })
+      const both = getFlowGraph([joiner], "root", undefined, {
+        ids: ["a", "b"],
+        total: 2,
+        tasks: [a, b],
+        walked: ["a", "b"],
+        cut: 0,
+      })
+      const bNode = both.nodes.find((candidate) => candidate.id === "joined:b")
+
+      expect(bNode).toMatchObject({ type: "joinedRunNode", data: b })
+      expect(both.edges.map((edge) => [edge.source, edge.target])).toEqual(
+        expect.arrayContaining([
+          ["joined:a", "joined:b"],
+          ["root", "joined:b"],
+        ]),
+      )
+    })
+
     it("leaves the workflow members where they were", () => {
       const membersOnly = getFlowGraph([member, memberChild], "root")
       const memberNodes = graph.nodes.filter((candidate) => ["root", "child"].includes(candidate.id))

@@ -128,6 +128,10 @@ export const getFlowGraph = (
     const expanded = new Map(joinedRuns.tasks.map((task) => [task.id, task]))
     const expandedChildMap = getChildMap(joinedRuns.tasks)
     const walked = new Set([...joinedRuns.ids, ...joinedRuns.walked])
+    // A joined run keeps its joined-run look however the layout reaches it, even as another run's child.
+    const joinTargets = new Set(
+      [...tasks, ...joinedRuns.tasks].flatMap((task) => task.joined_tasks ?? []).concat(joinedRuns.ids),
+    )
     const nodeIds = new Set(nodes.map((node) => node.id))
     const joinedNodeIds = new Map<string, string>()
     // A member's own id may already look like a joined node id ("joined:<id>"); prefix again until it's free.
@@ -182,8 +186,8 @@ export const getFlowGraph = (
         queue.push({ taskId, column: (nodes[0]?.position.x ?? 0) / COLUMN_WIDTH + 1 })
       }
 
-    // Every loaded task is an ordinary task node; a joined run's root gets the joined-run look on top.
-    const visitExpanded = (taskId: string, column: number, isRoot: boolean): number => {
+    // Every loaded task is an ordinary task node; a joined run gets the joined-run look on top.
+    const visitExpanded = (taskId: string, column: number): number => {
       placed.add(taskId)
       const task = expanded.get(taskId)
       const nodeId = joinedNodeId(taskId)
@@ -197,7 +201,7 @@ export const getFlowGraph = (
             connectable: false,
             deletable: false,
           }
-        : { ...createNode(task, column, 0, nodeId), type: isRoot ? "joinedRunNode" : "taskNode" }
+        : { ...createNode(task, column, 0, nodeId), type: joinTargets.has(taskId) ? "joinedRunNode" : "taskNode" }
       nodes.push(node)
       // A join the walk never reached was cut by its bounds and is counted in the note, not drawn.
       if (task) drawJoins(task, nodeId, column, (joinedId) => visited.has(joinedId) || walked.has(joinedId))
@@ -215,14 +219,14 @@ export const getFlowGraph = (
       for (const child of children) {
         if (placed.has(child.id) || visited.has(child.id)) continue
         edges.push(createEdge(nodeId, joinedNodeId(child.id)))
-        childRows.push(visitExpanded(child.id, column + 1, false))
+        childRows.push(visitExpanded(child.id, column + 1))
       }
       const row = childRows.length ? (childRows[0] + childRows[childRows.length - 1]) / 2 : nextLeafRow++
       node.position.y = row * ROW_HEIGHT
       return row
     }
     for (let index = 0; index < queue.length; index++)
-      if (!placed.has(queue[index].taskId)) visitExpanded(queue[index].taskId, queue[index].column, true)
+      if (!placed.has(queue[index].taskId)) visitExpanded(queue[index].taskId, queue[index].column)
   }
 
   const rootTask = taskMap.get(rootTaskId)
