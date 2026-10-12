@@ -1,6 +1,26 @@
 import { createTask } from "@test-fixtures"
+import { render } from "@test-utils"
 import { MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
-import { canvasMinZoom, focusViewport, getFlowGraph, hiddenJoinsNote } from "./flow-chart"
+import type { Task } from "@/types/surreal-records"
+import { ReactFlowProvider } from "@xyflow/react"
+import { createElement } from "react"
+import FlowChart, { canvasMinZoom, focusViewport, getFlowGraph, hiddenJoinsNote } from "./flow-chart"
+
+const viewportMoves = vi.hoisted(() => ({ setCenter: vi.fn(), setViewport: vi.fn() }))
+vi.mock("@xyflow/react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@xyflow/react")>()
+  // One stable wrapper per instance, as useReactFlow's own result is stable.
+  const wrapped = new WeakMap<object, ReturnType<typeof actual.useReactFlow>>()
+  return {
+    ...actual,
+    useReactFlow: () => {
+      const flow = actual.useReactFlow()
+      if (!wrapped.has(flow)) wrapped.set(flow, { ...flow, ...viewportMoves })
+      return wrapped.get(flow)!
+    },
+  }
+})
+vi.mock("@tanstack/react-router", () => ({ Link: () => null }))
 
 describe("getFlowGraph", () => {
   it("keeps nested channel and resource branches in separate rows", () => {
@@ -373,6 +393,28 @@ describe("getFlowGraph joined runs", () => {
     expect([x + 32, y + 32]).toEqual([width / 2, height / 2])
   })
 
+  it("lists, for every member, each joined-run node laid out in its subtree once and in layout order", () => {
+    const root = createTask({ id: "root" })
+    const quiet = createTask({ id: "quiet", parent_id: "root" })
+    const middle = createTask({ id: "middle", parent_id: "root" })
+    const joiner = createTask({ id: "joiner", parent_id: "middle", joined_tasks: ["run-1", "run-2"] })
+    const runs = [
+      createTask({ id: "run-1", workflow_id: "nightly" }),
+      createTask({ id: "step", workflow_id: "nightly", parent_id: "run-1" }),
+      createTask({ id: "run-2", workflow_id: "nightly" }),
+    ]
+    const { joinedBelow } = getFlowGraph([root, quiet, middle, joiner], "root", undefined, {
+      ids: ["run-1", "run-2"],
+      total: 2,
+      tasks: runs,
+      walked: runs.map((task) => task.id),
+      cut: 0,
+    })
+
+    const below = ["joined:run-1", "joined:step", "joined:run-2"]
+    expect(Object.fromEntries(joinedBelow)).toEqual({ root: below, middle: below, joiner: below })
+  })
+
   it("zooms out as far as a tall joined-run subtree needs to frame it, and lets the canvas go that far", () => {
     // Run A's 100 leaf children push run B about 10,000px below the joiner.
     const joiner = createTask({ id: "joiner", joined_tasks: ["run-a", "run-b"] })
@@ -642,5 +684,28 @@ describe("getFlowGraph joined runs", () => {
     const { nodes, edges } = getFlowGraph([createTask({ id: "root" })], "root", undefined, NO_JOINED_RUNS)
     expect(nodes).toHaveLength(1)
     expect(edges).toHaveLength(0)
+  })
+})
+
+describe("FlowChart first view", () => {
+  const chart = (tasks: Task[], currentTaskId: string) =>
+    createElement(ReactFlowProvider, null, createElement(FlowChart, { tasks, rootTaskId: "root", currentTaskId }))
+
+  it("centres the root when the graph doesn't hold the current task, and doesn't jump once it arrives", () => {
+    viewportMoves.setCenter.mockClear()
+    viewportMoves.setViewport.mockClear()
+    const root = createTask({ id: "root" })
+    const { rerender } = render(chart([], "old"))
+    expect(viewportMoves.setCenter).not.toHaveBeenCalled()
+
+    rerender(chart([root], "old"))
+    expect(viewportMoves.setCenter).toHaveBeenCalledOnce()
+    expect(viewportMoves.setCenter.mock.calls[0].slice(0, 2)).toEqual([0, 0])
+
+    rerender(chart([root, createTask({ id: "old", parent_id: "root" })], "old"))
+    expect(viewportMoves.setViewport).not.toHaveBeenCalled()
+
+    rerender(chart([root, createTask({ id: "old", parent_id: "root" })], "root"))
+    expect(viewportMoves.setViewport).toHaveBeenCalledOnce()
   })
 })

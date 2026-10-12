@@ -5,7 +5,7 @@ import type { Task } from "@/types/surreal-records"
 import { type JoinedRuns, MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
 import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
 import { toSvg } from "html-to-image"
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Background,
   ControlButton,
@@ -254,7 +254,11 @@ export const getFlowGraph = (
   const joinedBelow = new Map<string, string[]>()
   for (const nodeId of joinedNodeIds.values())
     for (let ancestor = layoutParents.get(nodeId); ancestor; ancestor = layoutParents.get(ancestor))
-      if (taskMap.has(ancestor)) joinedBelow.set(ancestor, [...(joinedBelow.get(ancestor) ?? []), nodeId])
+      if (taskMap.has(ancestor)) {
+        let below = joinedBelow.get(ancestor)
+        if (!below) joinedBelow.set(ancestor, (below = []))
+        below.push(nodeId)
+      }
 
   return {
     nodes: nodes,
@@ -365,39 +369,39 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[])
   const [locked, setLocked] = useState<boolean>(true)
   const [isInitialized, setInitialized] = useState<boolean>(false)
-  const [joinsNote, setJoinsNote] = useState<string>()
   const isDark = useIsDark()
 
   const width = useStore((state) => state.width)
   const height = useStore((state) => state.height)
-  const joinedBelowRef = useRef(new Map<string, string[]>())
-  const minZoom = useMemo(() => canvasMinZoom(nodes, width, height), [nodes, width, height])
+  const graph = useMemo(() => getFlowGraph(tasks, rootTaskId, undefined, joinedRuns), [tasks, rootTaskId, joinedRuns])
+  // From the laid-out graph, not `nodes`, which changes on every measurement, selection and drag.
+  const minZoom = useMemo(() => canvasMinZoom(graph.nodes, width, height), [graph, width, height])
   const focusNode = useCallback(
     (nodeId: string, graphNodes: Node[] = flow.getNodes()) => {
-      const viewport = focusViewport(graphNodes, joinedBelowRef.current, nodeId, width, height)
+      const viewport = focusViewport(graphNodes, graph.joinedBelow, nodeId, width, height)
       if (viewport) flow.setViewport(viewport, { duration: ZOOM_ANIMATION_SPEED })
       else flow.setCenter(0, 0, { zoom: FOCUS_ZOOM, duration: ZOOM_ANIMATION_SPEED })
     },
-    [flow, width, height],
+    [flow, graph, width, height],
   )
 
   const fitView = useCallback(() => flow.fitView({ duration: ZOOM_ANIMATION_SPEED }), [flow])
 
   useEffect(() => {
-    const graph = getFlowGraph(tasks, rootTaskId, undefined, joinedRuns)
-    joinedBelowRef.current = graph.joinedBelow
     setNodes(graph.nodes)
     setEdges(graph.edges)
-    setJoinsNote(hiddenJoinsNote(graph.hiddenJoinedRuns, graph.hiddenJoinLinks, graph.hiddenJoinedBranches))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, rootTaskId, joinedRuns, setNodes, setEdges, flow])
+  }, [graph, setNodes, setEdges])
+  const joinsNote = useMemo(
+    () => hiddenJoinsNote(graph.hiddenJoinedRuns, graph.hiddenJoinLinks, graph.hiddenJoinedBranches),
+    [graph],
+  )
 
-  // The first view frames the current task, with the joined runs laid out under it, once the graph holds it and
-  // the canvas has a size.
+  // The first view frames the current task, with the joined runs laid out under it, once the graph is drawn and the
+  // canvas has a size. A current task the graph doesn't hold gets the root centred instead, as Focus does.
   useEffect(() => {
     if (isInitialized) return
     if (currentTaskId) {
-      if (!width || !height || !nodes.some((node) => node.id === currentTaskId)) return
+      if (!width || !height || !nodes.length) return
       focusNode(currentTaskId, nodes)
     }
     setInitialized(true)
