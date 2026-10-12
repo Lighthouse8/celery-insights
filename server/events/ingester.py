@@ -17,6 +17,8 @@ PROGRESS_EVENT_TYPE = "task-progress"
 PROGRESS_DESCRIPTION_MAX_LENGTH = 200
 # Larger numbers lose precision in SurrealDB and JavaScript, and math.isfinite overflows on huge ints.
 PROGRESS_MAX_NUMBER = 2**53
+# Nested loops a task reports beside its overall position; more are dropped.
+PROGRESS_MAX_SECTIONS = 10
 
 TERMINAL_EVENT_TYPES = frozenset({"task-succeeded", "task-failed", "task-revoked", "task-rejected"})
 TERMINAL_TASK_STATES = ("SUCCESS", "FAILURE", "REVOKED", "REJECTED", "IGNORED")
@@ -511,6 +513,26 @@ def _progress_number(value: object) -> int | float | None:
     return value if 0 <= value <= PROGRESS_MAX_NUMBER else None
 
 
+def _progress_sections(value: object) -> list[dict]:
+    """Keep the usable sections of a report: a list of {description, current, total} objects."""
+    if not isinstance(value, list):
+        return []
+    sections = []
+    for section in value[:PROGRESS_MAX_SECTIONS]:
+        if not isinstance(section, dict):
+            continue
+        current = _progress_number(section.get("current"))
+        if current is None:
+            continue
+        kept: dict = {"current": current}
+        if total := _progress_number(section.get("total")):
+            kept["total"] = total
+        if (description := section.get("description")) is not None:
+            kept["description"] = str(description)[:PROGRESS_DESCRIPTION_MAX_LENGTH]
+        sections.append(kept)
+    return sections
+
+
 def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
     """Build an UPDATE that records a task's latest reported progress.
 
@@ -536,6 +558,9 @@ def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
     if description is not None:
         params[f"{p}_description"] = str(description)[:PROGRESS_DESCRIPTION_MAX_LENGTH]
         fields.append(f"description: ${p}_description")
+    if sections := _progress_sections(event.get("sections")):
+        params[f"{p}_sections"] = sections
+        fields.append(f"sections: ${p}_sections")
 
     attempt = event.get("attempt")
     if isinstance(attempt, int) and not isinstance(attempt, bool) and 0 <= attempt <= PROGRESS_MAX_NUMBER:

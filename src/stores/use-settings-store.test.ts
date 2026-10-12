@@ -13,6 +13,8 @@ describe("useSettingsStore", () => {
     expect(state.theme).toBe(PreferredTheme.SYSTEM)
     expect(state.hideWelcomeBanner).toBe(false)
     expect(state.rawEventsLimit).toBe(100)
+    // Experimental, so off until a user turns it on.
+    expect(state.showTaskProgress).toBe(false)
   })
 
   it("resetSettings restores defaults after modification", () => {

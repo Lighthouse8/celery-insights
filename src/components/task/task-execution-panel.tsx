@@ -1,6 +1,5 @@
 import DetailItem from "@components/common/detail-item"
 import Panel from "@components/common/panel"
-import TaskProgress, { progressLabel } from "@components/task/task-progress"
 import TaskStateBadge from "@components/task/task-state-badge"
 import { useNow } from "@hooks/use-now"
 import { Link } from "@tanstack/react-router"
@@ -52,20 +51,6 @@ const TaskExecutionPanel: React.FC<{ task: Task }> = ({ task }) => {
         <DetailItem label="Received" value={formatDateTime(task.received_at)} />
         <DetailItem label="Started" value={formatDateTime(task.started_at)} />
         <DetailItem label="Finished" value={formatDateTime(task.succeeded_at || task.failed_at || task.retried_at)} />
-        {task.progress && (
-          <div className="md:col-span-2">
-            <DetailItem
-              label={progressLabel(task.state)}
-              value={
-                <TaskProgress
-                  progress={task.progress}
-                  descriptionRestricted={task.restricted_fields?.includes("task.result.read")}
-                />
-              }
-              description={task.progress.updated_at && `Last reported ${task.progress.updated_at.toLocaleString()}`}
-            />
-          </div>
-        )}
       </div>
     </Panel>
   )

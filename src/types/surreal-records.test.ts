@@ -32,17 +32,33 @@ describe("parseTask progress", () => {
     expect(parseTask({ ...raw, retries: 0, progress: report }).progress?.current).toBe(3)
   })
 
+  it("parses sections outermost first, dropping empty optional fields", () => {
+    const task = parseTask({
+      ...raw,
+      progress: {
+        current: 1,
+        total: 2,
+        updated_at: "2025-06-15T12:00:05Z",
+        sections: [
+          { description: "Days", current: 4, total: 10 },
+          { description: "", current: 2, total: null },
+        ],
+      },
+    })
+    expect(task.progress?.sections).toEqual([{ description: "Days", current: 4, total: 10 }, { current: 2 }])
+  })
+
   it("parses reported progress and drops empty optional fields", () => {
     const task = parseTask({
       ...raw,
       progress: { current: 3, total: null, description: "", updated_at: "2025-06-15T12:00:05Z" },
     })
-    expect(task.progress).toEqual({ current: 3, updated_at: new Date("2025-06-15T12:00:05Z") })
+    expect(task.progress).toEqual({ current: 3, updated_at: new Date("2025-06-15T12:00:05Z"), sections: [] })
   })
 
   it("leaves a missing report time missing instead of claiming it is now", () => {
     const report = { current: 3, updated_at: "" }
 
-    expect(parseTask({ ...raw, progress: report }).progress).toEqual({ current: 3 })
+    expect(parseTask({ ...raw, progress: report }).progress).toEqual({ current: 3, sections: [] })
   })
 })

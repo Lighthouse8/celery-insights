@@ -21,6 +21,8 @@ export interface SurrealTaskProgress {
   updated_at: string
   /** The task's retry count when it reported, if the task sent it. */
   attempt?: number | null
+  /** Nested loops behind the overall position, outermost first. */
+  sections?: Array<{ description?: string | null; current: number; total?: number | null }> | null
 }
 
 /** Task record as stored in SurrealDB */
@@ -211,11 +213,18 @@ export const parseWorkerInspect = (worker: SurrealWorker | null): WorkerInspectD
 
 const isoToDate = (iso: string | null | undefined): Date | undefined => (iso ? new Date(iso) : undefined)
 
+export interface TaskProgressSection {
+  current: number
+  total?: number
+  description?: string
+}
+
 export interface TaskProgress {
   current: number
   total?: number
   description?: string
   updated_at?: Date
+  sections: TaskProgressSection[]
 }
 
 /** Parsed task — same shape as SurrealTask but with extracted id and Date timestamps */
@@ -317,6 +326,11 @@ export const parseTask = (raw: SurrealTask): Task => ({
           total: raw.progress.total ?? undefined,
           description: raw.progress.description || undefined,
           updated_at: isoToDate(raw.progress.updated_at),
+          sections: (raw.progress.sections ?? []).map((section) => ({
+            current: section.current,
+            total: section.total ?? undefined,
+            description: section.description || undefined,
+          })),
         }
       : undefined,
 })

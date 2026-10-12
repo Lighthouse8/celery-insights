@@ -82,9 +82,10 @@ export function scopedDatabase(db: Pick<Surreal, "query">, scope: ReadScope): Pi
     "id,type,state,sent_at,received_at,started_at,last_started_at,execution_active,execution_observed_at,execution_active_at,succeeded_at,failed_at,retried_at,revoked_at,rejected_at,runtime,last_updated,last_updated_observed,first_observed_at,had_error,eta,expires,retries,exchange,routing_key,worker"
   const taskFields = [
     taskMetadata,
-    // Progress counts are metadata; the description is text the task wrote, so it follows result access.
+    // Progress counts are metadata; descriptions (overall and per section) are text the task wrote, so they
+    // follow result access.
     denied.has("task.result.read")
-      ? "IF progress THEN { current: progress.current, total: progress.total, attempt: progress.attempt, updated_at: progress.updated_at } ELSE NONE END AS progress"
+      ? "IF progress THEN { current: progress.current, total: progress.total, attempt: progress.attempt, updated_at: progress.updated_at, sections: IF progress.sections THEN progress.sections.map(|$section| { current: $section.current, total: $section.total }) ELSE NONE END } ELSE NONE END AS progress"
       : "progress",
     `${JSON.stringify(scope.deny_fields)} AS restricted_fields`,
     `${taskScoped(scope)} AS relationships_restricted`,

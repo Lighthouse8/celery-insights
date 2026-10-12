@@ -1,6 +1,7 @@
 import TaskAvatar from "@components/task/task-avatar"
 import { runningProgressPercent } from "@components/task/task-progress"
 import { Progress } from "@components/ui/progress"
+import useSettingsStore from "@stores/use-settings-store"
 import type { Task } from "@/types/surreal-records"
 import React from "react"
 import { Handle, type Node, type NodeProps, Position } from "@xyflow/react"
@@ -8,7 +9,8 @@ import { Handle, type Node, type NodeProps, Position } from "@xyflow/react"
 type TaskNodeType = Node<Task & Record<string, unknown>, "taskNode">
 
 const TaskNode: React.FC<NodeProps<TaskNodeType>> = ({ data }) => {
-  const progressPercent = runningProgressPercent(data)
+  const showTaskProgress = useSettingsStore((state) => state.showTaskProgress)
+  const progressPercent = showTaskProgress ? runningProgressPercent(data) : undefined
   return (
     <>
       <Handle type="target" position={Position.Left} />

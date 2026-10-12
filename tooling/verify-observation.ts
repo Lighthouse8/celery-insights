@@ -54,7 +54,7 @@ try {
   await root.use({ namespace: "test", database: "observation" })
   await root.query(CORE_SCHEMA)
   await root.query(
-    "CREATE task:sample SET type = 'sample', state = 'SUCCESS', execution_observed_at = time::now(), execution_active_at = time::now(), workflow_id = 'sample', runtime = 0.2, last_updated = time::now(), result = 'private-result', kwargs = '{\"channel\":\"north team\"}', last_started_at = time::now(), progress = { current: 1, total: 2, description: 'private-progress', updated_at: time::now() }; CREATE event:sample SET task_id = 'sample', event_type = 'task-succeeded', timestamp = time::now(); CREATE worker:sample SET status = 'online', last_updated = time::now(); CREATE workflow:sample SET root_task_id = 'sample', aggregate_state = 'SUCCESS', task_count = 1, last_updated = time::now(); RELATE workflow:sample->workflow_task:sample->task:sample;",
+    "CREATE task:sample SET type = 'sample', state = 'SUCCESS', execution_observed_at = time::now(), execution_active_at = time::now(), workflow_id = 'sample', runtime = 0.2, last_updated = time::now(), result = 'private-result', kwargs = '{\"channel\":\"north team\"}', last_started_at = time::now(), progress = { current: 1, total: 2, description: 'private-progress', sections: [{ description: 'private-section', current: 3, total: 4 }], updated_at: time::now() }; CREATE event:sample SET task_id = 'sample', event_type = 'task-succeeded', timestamp = time::now(); CREATE worker:sample SET status = 'online', last_updated = time::now(); CREATE workflow:sample SET root_task_id = 'sample', aggregate_state = 'SUCCESS', task_count = 1, last_updated = time::now(); RELATE workflow:sample->workflow_task:sample->task:sample;",
   )
   const api = new ObservationApi(root, validateConfig({}), async () => ({
     python_version: "fixture",
@@ -194,16 +194,30 @@ try {
   assert.ok(visible[0].last_started_at)
   assert.equal((visible[0].progress as { current: number }).current, 1)
   assert.equal((visible[0].progress as { description?: string }).description, undefined)
+  // Section counts stay; their descriptions are task-written text like the overall one.
+  assert.deepEqual((visible[0].progress as { sections?: unknown[] }).sections, [{ current: 3, total: 4 }])
   const [unrestricted] = await scopedDatabase(root, { deny_fields: [] }).query<[Array<Record<string, unknown>>]>(
     "SELECT * FROM type::record('task', $taskId)",
     { taskId: "sample" },
   )
   assert.equal(unrestricted[0].relationships_restricted, undefined)
   assert.equal((unrestricted[0].progress as { description?: string }).description, "private-progress")
+  assert.deepEqual((unrestricted[0].progress as { sections?: unknown[] }).sections, [
+    { current: 3, description: "private-section", total: 4 },
+  ])
   const [payloadOnly] = await scopedDatabase(root, { deny_fields: ["task.result.read"] }).query<
     [Array<Record<string, unknown>>]
   >("SELECT * FROM type::record('task', $taskId)", { taskId: "sample" })
   assert.equal(payloadOnly[0].relationships_restricted, false)
+  await root.query(
+    "CREATE task:unsectioned SET type = 'sample', state = 'STARTED', workflow_id = 'unsectioned', last_updated = time::now(), progress = { current: 2, updated_at: time::now() };",
+  )
+  const [unsectioned] = await scopedDatabase(root, { deny_fields: ["task.result.read"] }).query<
+    [Array<Record<string, unknown>>]
+  >("SELECT * FROM type::record('task', $taskId)", { taskId: "unsectioned" })
+  assert.equal((unsectioned[0].progress as { current: number }).current, 2)
+  assert.equal((unsectioned[0].progress as { sections?: unknown[] }).sections, undefined)
+  await root.query("DELETE task:unsectioned;")
   const [withoutProgress] = await scopedDatabase(root, { deny_fields: ["task.result.read"] }).query<
     [Array<Record<string, unknown>>]
   >("SELECT * FROM type::record('task', $taskId)", { taskId: "hidden" })

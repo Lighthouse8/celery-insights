@@ -1,6 +1,7 @@
 import Panel from "@components/common/panel"
 import { LimitSelect } from "@components/raw_events/limit-select"
 import ThemeSelector from "@components/settings/theme-selector"
+import { Badge } from "@components/ui/badge"
 import { Button } from "@components/ui/button"
 import { Switch } from "@components/ui/switch"
 import useSettingsStore, {
@@ -15,15 +16,20 @@ const SettingRow = ({
   description,
   control,
   helper,
+  experimental = false,
 }: {
   title: string
   description: string
   control: React.ReactNode
   helper?: string
+  experimental?: boolean
 }) => (
   <div className="flex flex-col gap-3 rounded-2xl border bg-background/60 p-4 md:flex-row md:items-center md:justify-between">
     <div className="min-w-0 flex-1">
-      <div className="text-sm font-medium">{title}</div>
+      <div className="flex items-center gap-2 text-sm font-medium">
+        {title}
+        {experimental && <Badge variant="outline">Experimental</Badge>}
+      </div>
       <p className="mt-1 text-sm text-muted-foreground">{description}</p>
       {helper && <p className="mt-2 text-xs text-muted-foreground">{helper}</p>}
     </div>
@@ -35,6 +41,7 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
   const hideWelcomeBanner = useSettingsStore((state) => state.hideWelcomeBanner)
   const isDemo = useSettingsStore((state) => state.demo)
   const rawEventsLimit = useSettingsStore((state) => state.rawEventsLimit)
+  const showTaskProgress = useSettingsStore((state) => state.showTaskProgress)
   const demoAvailable = useDeploymentSettings((state) => state.demoAvailable)
 
   return (
@@ -66,6 +73,19 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
               checked={isDemo}
               disabled={!demoAvailable || Boolean(import.meta.env.VITE_DEMO_MODE)}
               onCheckedChange={(checked) => useSettingsStore.setState({ demo: checked })}
+            />
+          }
+        />
+        <SettingRow
+          title="Task progress"
+          experimental
+          description="Show the progress tasks report with task-progress events, in a Progress box on the task page and as a bar under running tasks in the workflow graph."
+          helper={showTaskProgress ? "Currently shown" : "Currently hidden"}
+          control={
+            <Switch
+              aria-label="Show task progress"
+              checked={showTaskProgress}
+              onCheckedChange={(checked) => useSettingsStore.setState({ showTaskProgress: checked })}
             />
           }
         />

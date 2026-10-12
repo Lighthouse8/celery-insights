@@ -72,6 +72,11 @@ DEFINE FIELD OVERWRITE progress ON task TYPE option<object>;
 DEFINE FIELD OVERWRITE progress.current ON task TYPE number;
 DEFINE FIELD OVERWRITE progress.total ON task TYPE option<number>;
 DEFINE FIELD OVERWRITE progress.description ON task TYPE option<string>;
+DEFINE FIELD OVERWRITE progress.sections ON task TYPE option<array<object>>;
+DEFINE FIELD OVERWRITE progress.sections.* ON task TYPE object;
+DEFINE FIELD OVERWRITE progress.sections.*.description ON task TYPE option<string>;
+DEFINE FIELD OVERWRITE progress.sections.*.current ON task TYPE number;
+DEFINE FIELD OVERWRITE progress.sections.*.total ON task TYPE option<number>;
 DEFINE FIELD OVERWRITE progress.updated_at ON task TYPE datetime;
 DEFINE FIELD OVERWRITE progress.attempt ON task TYPE option<int>;
 -- Latest attempt's start (started_at keeps the first); rejects late progress from earlier attempts.

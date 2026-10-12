@@ -260,7 +260,11 @@ describe("getLayoutKey", () => {
   const child = createTask({ id: "child", parent_id: "root", state: TaskState.STARTED })
 
   it("ignores progress and state, which never move a node", () => {
-    const reported = { ...child, state: TaskState.SUCCESS, progress: { current: 4, total: 10, updated_at: new Date() } }
+    const reported = {
+      ...child,
+      state: TaskState.SUCCESS,
+      progress: { current: 4, total: 10, updated_at: new Date(), sections: [] },
+    }
 
     expect(getLayoutKey([root, reported], "root")).toBe(getLayoutKey([root, child], "root"))
     expect(getLayoutKey([child, root], "root")).toBe(getLayoutKey([root, child], "root"))
