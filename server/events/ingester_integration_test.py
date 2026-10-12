@@ -429,3 +429,46 @@ async def test_new_attempt_clears_progress_tagged_with_an_earlier_attempt(
     )
     assert job["retries"] == 2
     assert job.get("progress") is None
+
+
+@pytest.mark.asyncio
+async def test_task_id_sent_again_after_finishing_starts_a_new_run(
+    surreal_db: AsyncWsSurrealConnection, mocker: MockerFixture
+) -> None:
+    mocker.patch("events.ingester.get_db", return_value=surreal_db)
+    ingester = SurrealDBIngester(asyncio.Queue())
+
+    async def ingest(*events: dict) -> dict:
+        ingester._buffer = list(events)
+        await ingester._flush()
+        assert ingester._buffer == [], "flush failed and re-queued the batch"
+        return cast(list[dict], await surreal_db.query("SELECT * FROM task:job"))[0]
+
+    job = await ingest(
+        {"type": "task-received", "uuid": "job", "timestamp": 1700000000.0, "name": "reports.cache", "retries": 2},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000001.0},
+        {"type": "task-progress", "uuid": "job", "timestamp": 1700000002.0, "current": 9, "total": 10, "attempt": 2},
+        {"type": "task-succeeded", "uuid": "job", "timestamp": 1700000003.0},
+    )
+    assert job["retries"] == 2
+
+    # apply_async(task_id=<idempotency key>) runs the same id again from retries 0.
+    job = await ingest({"type": "task-sent", "uuid": "job", "timestamp": 1700000010.0, "retries": 0})
+    assert job["retries"] == 0
+    assert job.get("progress") is None
+
+    job = await ingest(
+        {"type": "task-received", "uuid": "job", "timestamp": 1700000011.0, "retries": 0},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000012.0},
+        {"type": "task-progress", "uuid": "job", "timestamp": 1700000013.0, "current": 1, "total": 10, "attempt": 0},
+    )
+    assert job["retries"] == 0
+    assert job["progress"]["current"] == 1
+
+    # Without events, the poller sees only each run's result: a newer result over a finished run is a new run.
+    for meta in (
+        {"status": "SUCCESS", "retries": 2, "date_done": "2023-11-14T22:14:00Z"},
+        {"status": "SUCCESS", "retries": 0, "date_done": "2023-11-14T22:15:00Z"},
+    ):
+        await surreal_db.query(*_build_task_meta_upsert("polled", meta))
+    assert cast(list[dict], await surreal_db.query("SELECT * FROM task:polled"))[0]["retries"] == 0

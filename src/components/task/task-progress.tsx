@@ -1,16 +1,17 @@
 import Panel from "@components/common/panel"
 import { Progress } from "@components/ui/progress"
 import { cn } from "@lib/utils"
+import { isTerminalState } from "@utils/task-phases"
 import { LockKeyhole } from "lucide-react"
-import { TaskState, type Task } from "@/types/surreal-records"
+import type { Task, TaskState } from "@/types/surreal-records"
 import React from "react"
 
-/** A finished task keeps its last report, so its title says so. */
-export const progressLabel = (state: TaskState) => (state === TaskState.STARTED ? "Progress" : "Last progress")
+/** A finished task keeps its last report, so its title says so. A custom `update_state` state is still running. */
+export const progressLabel = (state: TaskState) => (isTerminalState(state) ? "Last progress" : "Progress")
 
 /** The workflow graph's bar: only for a running task whose total is known. */
 export const runningProgressPercent = (task: Task): number | undefined =>
-  task.state === TaskState.STARTED && task.progress?.total
+  !isTerminalState(task.state) && task.progress?.total
     ? Math.min(100, (task.progress.current / task.progress.total) * 100)
     : undefined
 

@@ -425,6 +425,14 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
     if isinstance(event_retries, int) and not isinstance(event_retries, bool):
         retries = f"math::max([{retries}, ${p}_retries])"
 
+    if event_type in ("task-sent", "task-received"):
+        # The same id sent again after it finished (apply_async(task_id=...)) is a new run: its retries
+        # start over, and the finished run's progress no longer applies.
+        new_run = f"${p}_apply AND ${p}_previous.state IN {TERMINAL_TASK_STATES_SQL}"
+        set_clauses.append(f"progress = IF {new_run} THEN NONE ELSE ${p}_previous.progress END")
+        if isinstance(event_retries, int) and not isinstance(event_retries, bool):
+            retries = f"IF {new_run} THEN ${p}_retries ELSE {retries} END"
+
     if event_type in ("task-retried", "task-started"):
         # A retry starts from zero, so both events drop progress reported before them. task-retried
         # comes from the failed attempt's own worker, whose clock orders that attempt's reports even

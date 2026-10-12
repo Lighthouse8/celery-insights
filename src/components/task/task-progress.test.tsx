@@ -96,6 +96,11 @@ describe("progressLabel", () => {
     expect(progressLabel(TaskState.SUCCESS)).toBe("Last progress")
     expect(progressLabel(TaskState.FAILURE)).toBe("Last progress")
   })
+
+  it("calls a task in a custom update_state state running", () => {
+    expect(progressLabel("PROGRESS" as TaskState)).toBe("Progress")
+    expect(progressLabel(TaskState.RETRY)).toBe("Last progress")
+  })
 })
 
 describe("runningProgressPercent", () => {
@@ -114,5 +119,10 @@ describe("runningProgressPercent", () => {
     expect(
       runningProgressPercent(createTask({ state: TaskState.STARTED, progress: report({ current: 12, total: 10 }) })),
     ).toBe(100)
+  })
+
+  it("fills the bar for a running task in a custom update_state state", () => {
+    expect(runningProgressPercent(createTask({ state: "PROGRESS" as TaskState, progress }))).toBe(75)
+    expect(runningProgressPercent(createTask({ state: TaskState.RETRY, progress }))).toBeUndefined()
   })
 })
