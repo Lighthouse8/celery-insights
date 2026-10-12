@@ -68,7 +68,13 @@ describe("DEMO_SCHEMA", () => {
       "progress.current",
       "progress.total",
       "progress.description",
+      "progress.sections",
+      "progress.sections.*",
+      "progress.sections.*.description",
+      "progress.sections.*.current",
+      "progress.sections.*.total",
       "progress.updated_at",
+      "progress.attempt",
       "last_started_at",
     ]
     for (const field of expectedFields) {

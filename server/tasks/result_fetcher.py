@@ -91,8 +91,10 @@ def _build_task_meta_upsert(task_id: str, meta: dict, *, search_indexing_enabled
             f"ELSE $meta_previous.{field} ?? ${field} END"
             for field in ("type", "args", "kwargs", "worker", "routing_key")
         ),
-        # Retries only go up; metadata from a failed attempt must not lower the count events raised.
+        # Retries only go up within a run; metadata from a failed attempt must not lower the count events
+        # raised. A newer result over a finished run is the same id sent again, with its own count.
         "retries = IF $retries = NONE THEN $meta_previous.retries"
+        f" ELSE IF $meta_apply_state AND $meta_previous.state IN {TERMINAL_TASK_STATES_SQL} THEN $retries"
         " ELSE math::max([$meta_previous.retries ?? 0, $retries]) END",
         "kwargs_search_source = IF $kwargs != NONE AND ($meta_apply_state OR $meta_previous.kwargs = NONE) "
         "THEN 'repr' ELSE $meta_previous.kwargs_search_source END",

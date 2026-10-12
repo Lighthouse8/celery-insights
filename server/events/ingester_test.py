@@ -7,6 +7,7 @@ from pytest_mock import MockerFixture
 from events.ingester import (
     BACKPRESSURE_THRESHOLD,
     CONFLICT_RETRIES,
+    TERMINAL_TASK_STATES_SQL,
     SurrealDBIngester,
     build_children_update,
     build_raw_event,
@@ -172,11 +173,22 @@ class TestBuildTaskUpsert:
 
     def test_retries_only_go_up(self):
         query, params = build_task_upsert(
-            {"type": "task-received", "uuid": "abc", "timestamp": 1700000000.0, "retries": 2}, 0
+            {"type": "task-started", "uuid": "abc", "timestamp": 1700000000.0, "retries": 2}, 0
         )
 
         assert "retries = math::max([$t0_previous.retries ?? 0, $t0_retries])" in query
         assert params["t0_retries"] == 2
+
+    def test_send_after_a_finished_run_starts_retries_and_progress_over(self):
+        query, _ = build_task_upsert(
+            {"type": "task-received", "uuid": "abc", "timestamp": 1700000000.0, "retries": 0}, 0
+        )
+
+        new_run = f"$t0_apply AND $t0_previous.state IN {TERMINAL_TASK_STATES_SQL}"
+        assert (
+            f"retries = IF {new_run} THEN $t0_retries ELSE math::max([$t0_previous.retries ?? 0, $t0_retries]) END"
+        ) in query
+        assert f"progress = IF {new_run} THEN NONE ELSE $t0_previous.progress END" in query
 
     def test_unique_param_prefix_per_index(self):
         _, params_0 = build_task_upsert({"type": "task-sent", "uuid": "a", "timestamp": 1700000000.0}, 0)
@@ -306,7 +318,7 @@ class TestBuildTaskProgressUpdate:
         )
         assert "progress.attempt < (math::max([$t0_previous.retries ?? 0, $t0_retries]))" in query
 
-        query, _ = build_task_upsert({"type": "task-received", "uuid": "abc", "timestamp": 1700000000.0}, 0)
+        query, _ = build_task_upsert({"type": "task-succeeded", "uuid": "abc", "timestamp": 1700000000.0}, 0)
         assert "progress" not in query
 
 
