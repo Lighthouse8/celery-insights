@@ -265,7 +265,7 @@ describe("getFlowGraph joined runs", () => {
   const root = createTask({ id: "root", joined_tasks: ["elsewhere", "missing"] })
   const child = createTask({ id: "child", parent_id: "root", joined_tasks: ["elsewhere", "root"] })
   const elsewhere = createTask({ id: "elsewhere", workflow_id: "other" })
-  const chosen = { ids: ["elsewhere", "missing"], total: 2, tasks: [elsewhere], cut: 0 }
+  const chosen = { ids: ["elsewhere", "missing"], total: 2, tasks: [elsewhere], walked: [], cut: 0 }
 
   it("draws joined runs as dashed extra nodes outside the workflow tree", () => {
     const { nodes, edges } = getFlowGraph([root, child], "root", undefined, chosen)
@@ -308,6 +308,7 @@ describe("getFlowGraph joined runs", () => {
     const { nodes, edges, hiddenJoinedRuns } = getFlowGraph(tasks, "root", undefined, {
       ids: ["a-run", ...bIds.slice(0, -1)],
       total: MAX_JOINED_RUNS + 1,
+      walked: [],
       cut: 0,
       tasks: [aRun],
     })
@@ -331,6 +332,7 @@ describe("getFlowGraph joined runs", () => {
     const { nodes, edges, hiddenJoinedRuns, hiddenJoinLinks } = getFlowGraph(tasks, "root", undefined, {
       ids: ["shared"],
       total: 1,
+      walked: [],
       cut: 0,
       tasks: [],
     })
@@ -355,7 +357,13 @@ describe("getFlowGraph joined runs", () => {
       createTask({ id: "joined:joined:run-1", parent_id: "root" }),
     ]
 
-    const { nodes, edges } = getFlowGraph(tasks, "root", undefined, { ids: ["run-1"], total: 1, tasks: [], cut: 0 })
+    const { nodes, edges } = getFlowGraph(tasks, "root", undefined, {
+      ids: ["run-1"],
+      total: 1,
+      tasks: [],
+      walked: [],
+      cut: 0,
+    })
 
     const ids = nodes.map((node) => node.id)
     expect(new Set(ids).size).toBe(ids.length)
@@ -399,6 +407,7 @@ describe("getFlowGraph joined runs", () => {
       ids: ["resource"],
       total: 1,
       tasks: [resource, hierarchy, finalize, fail, metrics, nested, nestedChild],
+      walked: [],
       cut: 0,
     }
     const graph = getFlowGraph([member, memberChild], "root", undefined, expanded)

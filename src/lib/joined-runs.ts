@@ -10,16 +10,19 @@ export const MAX_EXPANSION_DEPTH = 20
 /**
  * The joined runs the task-workflow read chose for a workflow: `ids` (first MAX_JOINED_RUNS non-member ids in id
  * order, loadable or not), `total` (all of them, before the cap), `tasks` (the records it loaded: those runs and
- * their expanded descendants, including runs those joined), and `cut` (links it left unexpanded by its bounds).
+ * their expanded descendants, including runs those joined), `walked`, and `cut` (links it left unexpanded by its
+ * bounds).
  */
 export interface JoinedRuns {
   ids: string[]
   total: number
   tasks: Task[]
+  /** Every id the read's walk reached: the chosen runs and every child or joined run it tried to read. */
+  walked: string[]
   cut: number
 }
 
-export const NO_JOINED_RUNS: JoinedRuns = { ids: [], total: 0, tasks: [], cut: 0 }
+export const NO_JOINED_RUNS: JoinedRuns = { ids: [], total: 0, tasks: [], walked: [], cut: 0 }
 
 /**
  * What an expanded task's node and the walk need. Never payloads: up to MAX_EXPANDED_TASKS full records could
@@ -63,6 +66,6 @@ export const joinedRunsQuery = (): { statements: string[]; fields: string } => {
   const found = Array.from({ length: last + 1 }, (_, level) => `$found${level}`).join(",")
   return {
     statements,
-    fields: `joinedIds:$seen0,joinedTotal:array::len($joinedCandidates),expanded:array::concat(${found}),expansionCut:array::len(array::distinct(array::concat(${cut.join(",")},$beyond)))`,
+    fields: `joinedIds:$seen0,walkedIds:$seen${last},joinedTotal:array::len($joinedCandidates),expanded:array::concat(${found}),expansionCut:array::len(array::distinct(array::concat(${cut.join(",")},$beyond)))`,
   }
 }

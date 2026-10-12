@@ -265,6 +265,7 @@ try {
     expanded: Array<Record<string, unknown>>
     expansionCut: number
     joinedIds: string[]
+    walkedIds: string[]
     joinedTotal: number
   }
   const workflowRead = buildRead({ operation: "task-workflow", taskId: "sample" })
@@ -342,6 +343,9 @@ try {
     "task:resource",
   ])
   assert.equal(subtree.expansionCut, 0)
+  // The walk reports every id it reached, including ones with no row yet, so a later row refreshes the view.
+  await root.query("UPDATE task:fail SET children = ['fail_retry']")
+  assert((await readWorkflow(root)).walkedIds.includes("fail_retry"))
   const restrictedSubtree = await readWorkflow(scopedDatabase(root, { deny_fields: ["task.result.read"] }))
   assert.deepEqual(expandedIds(restrictedSubtree), expandedIds(subtree))
   const rowScopedSubtree = await readWorkflow(
