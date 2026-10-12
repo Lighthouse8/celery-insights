@@ -39,4 +39,10 @@ describe("parseTask progress", () => {
     })
     expect(task.progress).toEqual({ current: 3, updated_at: new Date("2025-06-15T12:00:05Z") })
   })
+
+  it("leaves a missing report time missing instead of claiming it is now", () => {
+    const report = { current: 3, updated_at: "" }
+
+    expect(parseTask({ ...raw, progress: report }).progress).toEqual({ current: 3 })
+  })
 })

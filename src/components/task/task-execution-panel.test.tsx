@@ -47,4 +47,16 @@ describe("TaskExecutionPanel", () => {
     render(<TaskExecutionPanel task={startedTask({ execution_active: true, execution_observed_at: now })} />)
     expect(screen.getByText("Runtime:").nextElementSibling).toHaveTextContent("1min, 0.0s")
   })
+
+  it("offers the last report time only when it is known", () => {
+    const progress = { current: 3, total: 10 }
+    const { unmount } = render(
+      <TaskExecutionPanel task={startedTask({ progress: { ...progress, updated_at: now } })} />,
+    )
+    expect(screen.getByText("Progress:")).toHaveAttribute("data-slot", "tooltip-trigger")
+    unmount()
+
+    render(<TaskExecutionPanel task={startedTask({ progress })} />)
+    expect(screen.getByText("Progress:")).not.toHaveAttribute("data-slot")
+  })
 })
