@@ -465,10 +465,30 @@ async def test_task_id_sent_again_after_finishing_starts_a_new_run(
     assert job["retries"] == 0
     assert job["progress"]["current"] == 1
 
-    # Without events, the poller sees only each run's result: a newer result over a finished run is a new run.
-    for meta in (
-        {"status": "SUCCESS", "retries": 2, "date_done": "2023-11-14T22:14:00Z"},
-        {"status": "SUCCESS", "retries": 0, "date_done": "2023-11-14T22:15:00Z"},
-    ):
+    # The poller then stores this run's result, and reads it again after a monitor restart: same run, same report.
+    for _ in range(2):
+        await surreal_db.query(
+            *_build_task_meta_upsert("job", {"status": "SUCCESS", "retries": 0, "date_done": "2023-11-14T22:13:40Z"})
+        )
+        job = cast(list[dict], await surreal_db.query("SELECT * FROM task:job"))[0]
+        assert job["state"] == "SUCCESS"
+        assert job["progress"]["current"] == 1
+
+    async def poll(meta: dict) -> dict:
         await surreal_db.query(*_build_task_meta_upsert("polled", meta))
-    assert cast(list[dict], await surreal_db.query("SELECT * FROM task:polled"))[0]["retries"] == 0
+        return cast(list[dict], await surreal_db.query("SELECT * FROM task:polled"))[0]
+
+    # Without events, the poller sees only each run's result: a newer result over a finished run is a new run.
+    first_run = {"status": "SUCCESS", "retries": 2, "date_done": "2023-11-14T22:14:00Z"}
+    await poll(first_run)
+    await surreal_db.query(
+        "UPDATE task:polled SET progress = {current: 9, total: 10, attempt: 2, updated_at: d'2023-11-14T22:13:59Z'}"
+    )
+    assert (await poll(first_run))["progress"]["attempt"] == 2
+    polled = await poll({"status": "SUCCESS", "retries": 0, "date_done": "2023-11-14T22:15:00Z"})
+    assert polled["retries"] == 0
+    assert polled.get("progress") is None
+
+    # Without result_extended, the metadata carries no retries; the new run still drops the old report.
+    await surreal_db.query("UPDATE task:polled SET progress = {current: 9, updated_at: d'2023-11-14T22:15:30Z'}")
+    assert (await poll({"status": "SUCCESS", "date_done": "2023-11-14T22:16:00Z"})).get("progress") is None
