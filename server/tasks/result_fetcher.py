@@ -83,6 +83,12 @@ def _build_task_meta_upsert(task_id: str, meta: dict, *, search_indexing_enabled
         "routing_key": meta.get("queue"),
     }
 
+    # A newer result over a finished run is the same id sent again. The same result read again (the
+    # poller forgets what it saw on restart) is still the same run.
+    new_run = (
+        f"$meta_apply_state AND $meta_previous.state IN {TERMINAL_TASK_STATES_SQL} "
+        "AND $meta_timestamp != $meta_previous.last_updated"
+    )
     set_clauses = [
         "state = IF $meta_apply_state THEN $state ELSE $meta_previous.state END",
         # Invocation metadata is not state: older backend metadata still fills gaps left by terminal-only events.
@@ -92,10 +98,11 @@ def _build_task_meta_upsert(task_id: str, meta: dict, *, search_indexing_enabled
             for field in ("type", "args", "kwargs", "worker", "routing_key")
         ),
         # Retries only go up within a run; metadata from a failed attempt must not lower the count events
-        # raised. A newer result over a finished run is the same id sent again, with its own count.
+        # raised. A new run has its own count, and the finished run's progress no longer applies.
         "retries = IF $retries = NONE THEN $meta_previous.retries"
-        f" ELSE IF $meta_apply_state AND $meta_previous.state IN {TERMINAL_TASK_STATES_SQL} THEN $retries"
+        f" ELSE IF {new_run} THEN $retries"
         " ELSE math::max([$meta_previous.retries ?? 0, $retries]) END",
+        f"progress = IF {new_run} THEN NONE ELSE $meta_previous.progress END",
         "kwargs_search_source = IF $kwargs != NONE AND ($meta_apply_state OR $meta_previous.kwargs = NONE) "
         "THEN 'repr' ELSE $meta_previous.kwargs_search_source END",
         "workflow_id = $meta_previous.workflow_id ?? $workflow_id",
