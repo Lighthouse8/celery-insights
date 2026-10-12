@@ -259,7 +259,7 @@ describe("getFlowGraph joined runs", () => {
   const root = createTask({ id: "root", joined_tasks: ["elsewhere", "missing"] })
   const child = createTask({ id: "child", parent_id: "root", joined_tasks: ["elsewhere", "root"] })
   const elsewhere = createTask({ id: "elsewhere", workflow_id: "other" })
-  const chosen = { ids: ["elsewhere", "missing"], total: 2, tasks: [elsewhere] }
+  const chosen = { ids: ["elsewhere", "missing"], total: 2, tasks: [elsewhere], cut: 0 }
 
   it("draws joined runs as dashed extra nodes outside the workflow tree", () => {
     const { nodes, edges } = getFlowGraph([root, child], "root", undefined, chosen)
@@ -302,6 +302,7 @@ describe("getFlowGraph joined runs", () => {
     const { nodes, edges, hiddenJoinedRuns } = getFlowGraph(tasks, "root", undefined, {
       ids: ["a-run", ...bIds.slice(0, -1)],
       total: MAX_JOINED_RUNS + 1,
+      cut: 0,
       tasks: [aRun],
     })
 
@@ -325,6 +326,7 @@ describe("getFlowGraph joined runs", () => {
     const { nodes, edges, hiddenJoinedRuns, hiddenJoinLinks } = getFlowGraph(tasks, "root", undefined, {
       ids: ["shared"],
       total: 1,
+      cut: 0,
       tasks: [],
     })
 
@@ -348,7 +350,7 @@ describe("getFlowGraph joined runs", () => {
       createTask({ id: "joined:joined:run-1", parent_id: "root" }),
     ]
 
-    const { nodes, edges } = getFlowGraph(tasks, "root", undefined, { ids: ["run-1"], total: 1, tasks: [] })
+    const { nodes, edges } = getFlowGraph(tasks, "root", undefined, { ids: ["run-1"], total: 1, tasks: [], cut: 0 })
 
     const ids = nodes.map((node) => node.id)
     expect(new Set(ids).size).toBe(ids.length)
@@ -360,6 +362,96 @@ describe("getFlowGraph joined runs", () => {
       ["root", runNode?.id],
       ["root", "joined:run-1"],
     ])
+  })
+
+  describe("expanded runs", () => {
+    const member = createTask({ id: "root", joined_tasks: ["resource"] })
+    const memberChild = createTask({ id: "child", parent_id: "root" })
+    // Shapes from Fyr: the hierarchy task also lists finalize, whose parent is the resource task.
+    const resource = createTask({ id: "resource", workflow_id: "nightly", children: ["hierarchy", "finalize"] })
+    const hierarchy = createTask({
+      id: "hierarchy",
+      workflow_id: "nightly",
+      parent_id: "resource",
+      children: ["finalize", "metrics"],
+    })
+    const finalize = createTask({
+      id: "finalize",
+      workflow_id: "nightly",
+      parent_id: "resource",
+      children: ["fail", "resource"],
+    })
+    const fail = createTask({ id: "fail", workflow_id: "nightly", parent_id: "finalize" })
+    const metrics = createTask({
+      id: "metrics",
+      workflow_id: "nightly",
+      parent_id: "hierarchy",
+      joined_tasks: ["nested", "root", "gone"],
+    })
+    const nested = createTask({ id: "nested", workflow_id: "nested", children: ["nested-child"] })
+    const nestedChild = createTask({ id: "nested-child", workflow_id: "nested", parent_id: "nested" })
+    const expanded = {
+      ids: ["resource"],
+      total: 1,
+      tasks: [resource, hierarchy, finalize, fail, metrics, nested, nestedChild],
+      cut: 0,
+    }
+    const graph = getFlowGraph([member, memberChild], "root", undefined, expanded)
+    const node = (id: string) => graph.nodes.find((candidate) => candidate.id === id)
+    const solid = graph.edges.filter((edge) => !edge.style?.strokeDasharray).map((edge) => [edge.source, edge.target])
+    const dashed = graph.edges.filter((edge) => edge.style?.strokeDasharray).map((edge) => [edge.source, edge.target])
+
+    it("draws a joined run's subtree as task nodes under its joined-run root", () => {
+      expect(node("joined:resource")).toMatchObject({
+        type: "joinedTaskNode",
+        data: { taskId: "resource", task: resource },
+      })
+      for (const task of [hierarchy, finalize, fail, metrics])
+        expect(node(`joined:${task.id}`)).toMatchObject({ type: "taskNode", data: task })
+      expect(solid).toEqual(
+        expect.arrayContaining([
+          ["joined:resource", "joined:finalize"],
+          ["joined:resource", "joined:hierarchy"],
+          ["joined:finalize", "joined:fail"],
+          ["joined:hierarchy", "joined:metrics"],
+        ]),
+      )
+      // Finalize hangs under its parent only, though the hierarchy task lists it too.
+      expect(solid).not.toContainEqual(["joined:hierarchy", "joined:finalize"])
+      expect(node("joined:hierarchy")!.position.x).toBe(node("joined:resource")!.position.x + 180)
+      expect(node("joined:resource")!.position.x).toBe(node("root")!.position.x + 180)
+    })
+
+    it("enters each expanded run by a dashed edge and expands runs it joined", () => {
+      expect(dashed).toEqual([
+        ["root", "joined:resource"],
+        ["joined:metrics", "joined:nested"],
+        ["joined:metrics", "root"],
+        ["joined:metrics", "joined:gone"],
+      ])
+      expect(node("joined:nested")?.type).toBe("joinedTaskNode")
+      expect(node("joined:nested-child")).toMatchObject({ type: "taskNode", data: nestedChild })
+      expect(solid).toContainEqual(["joined:nested", "joined:nested-child"])
+      // A run the read couldn't load stays a placeholder.
+      expect(node("joined:gone")).toMatchObject({ type: "joinedTaskNode", data: { taskId: "gone", task: undefined } })
+    })
+
+    it("leaves the workflow members where they were", () => {
+      const membersOnly = getFlowGraph([member, memberChild], "root")
+      const memberNodes = graph.nodes.filter((candidate) => ["root", "child"].includes(candidate.id))
+      expect(memberNodes).toEqual(membersOnly.nodes)
+      const treeRows = new Set(memberNodes.map((candidate) => candidate.position.y))
+      for (const candidate of graph.nodes.filter((other) => other.id.startsWith("joined:")))
+        expect(treeRows.has(candidate.position.y)).toBe(false)
+    })
+
+    it("notes the branches the read left unexpanded", () => {
+      const cut = getFlowGraph([member], "root", undefined, { ...expanded, total: 2, cut: 3 })
+      expect(cut.hiddenJoinedBranches).toBe(3)
+      expect(hiddenJoinsNote(cut.hiddenJoinedRuns, 2, cut.hiddenJoinedBranches)).toBe(
+        "1 more joined run, 2 join links, and 3 joined-run branches not shown",
+      )
+    })
   })
 
   it("draws nothing extra without joins", () => {

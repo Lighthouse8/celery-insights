@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { trimQuery } from "../../src/lib/task-search"
 import { buildIndexedTaskSearch, buildIndexedWorkflowSearch } from "../../src/lib/indexed-search"
-import { MAX_JOINED_RUNS } from "../../src/lib/joined-runs"
+import { joinedRunsQuery } from "../../src/lib/joined-runs"
 import { RecordId } from "surrealdb"
 import { grants, type Permission, type Principal } from "../security/permissions"
 
@@ -244,15 +244,22 @@ function compileRead(input: ReadRequest): { sql: string; bindings: Record<string
       sql: "SELECT exception,count() AS count FROM task WHERE exception != NONE GROUP BY exception ORDER BY count DESC;",
       bindings,
     }
-  if (p.operation === "task-workflow")
-    // Joined runs (task-joined events) belong to other workflows. This read alone chooses which a view shows: the
-    // first MAX_JOINED_RUNS non-member ids over every member (the returned members stop at 1,000), from one id-only
-    // select. Each chosen run is read by id through type::record, so a restricted scope applies to it as it does to
-    // the task itself; joinedIds keeps the ones it couldn't load.
+  if (p.operation === "task-workflow") {
+    // Joined runs (task-joined events) belong to other workflows. This read alone chooses which a view shows and
+    // expands each into its subtree (joinedRunsQuery). Every joined task is read by id through type::record, so a
+    // restricted scope applies to it as it does to the task itself; joinedIds keeps the runs it couldn't load.
+    const joined = joinedRunsQuery()
     return {
-      sql: `LET $task = (SELECT * FROM type::record('task',$taskId) TIMEOUT 2s)[0];LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId;LET $members = SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC LIMIT 1000 TIMEOUT 2s;LET $links = SELECT record::id(id) AS task_id,joined_tasks FROM task WHERE workflow_id = $workflowId TIMEOUT 2s;LET $joinedCandidates = array::sort(array::complement(array::distinct(array::filter(array::flatten($links.joined_tasks),|$id| $id != NONE)),$links.task_id));LET $joinedIds = array::slice($joinedCandidates,0,${MAX_JOINED_RUNS});RETURN {task:$task,workflow:(SELECT * FROM type::record('workflow',$workflowId) TIMEOUT 2s)[0],members:$members,joinedIds:$joinedIds,joinedTotal:array::len($joinedCandidates),joined:array::filter(array::map($joinedIds,|$id| (SELECT * FROM type::record('task',$id) TIMEOUT 2s)[0]),|$joined| $joined != NONE)};`,
+      sql: [
+        "LET $task = (SELECT * FROM type::record('task',$taskId) TIMEOUT 2s)[0]",
+        "LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId",
+        "LET $members = SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC LIMIT 1000 TIMEOUT 2s",
+        ...joined.statements,
+        `RETURN {task:$task,workflow:(SELECT * FROM type::record('workflow',$workflowId) TIMEOUT 2s)[0],members:$members,${joined.fields}};`,
+      ].join(";"),
       bindings,
     }
+  }
   if (p.operation === "home")
     return {
       sql: `SELECT count() AS recent_task_count FROM task WHERE last_updated > time::now() - 3600s GROUP ALL;SELECT count() AS recent_failure_count FROM task WHERE last_updated > time::now() - 3600s AND (state = 'FAILURE' OR exception != NONE) GROUP ALL;SELECT last_updated FROM task ORDER BY last_updated DESC LIMIT 1;SELECT time::format(time::floor(last_updated,600s),'%Y-%m-%dT%H:%M:%SZ') AS bucket,count() AS count FROM task WHERE last_updated > time::now() - 3600s GROUP BY bucket ORDER BY bucket ASC;SELECT time::format(time::floor(last_updated,600s),'%Y-%m-%dT%H:%M:%SZ') AS bucket,count() AS count FROM task WHERE last_updated > time::now() - 3600s AND (state = 'FAILURE' OR exception != NONE) GROUP BY bucket ORDER BY bucket ASC;`,
