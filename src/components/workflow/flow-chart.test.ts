@@ -253,3 +253,43 @@ describe("getFlowGraph", () => {
     expect(nodes[0].position.y).toBe(3 * 100)
   })
 })
+
+describe("getFlowGraph joined runs", () => {
+  const root = createTask({ id: "root", joined_tasks: ["elsewhere", "missing"] })
+  const child = createTask({ id: "child", parent_id: "root", joined_tasks: ["elsewhere", "root"] })
+  const elsewhere = createTask({ id: "elsewhere", workflow_id: "other" })
+
+  it("draws joined runs as dashed extra nodes outside the workflow tree", () => {
+    const { nodes, edges } = getFlowGraph([root, child], "root", undefined, [elsewhere])
+
+    const joinedNodes = nodes.filter((node) => node.type === "joinedTaskNode")
+    expect(joinedNodes.map((node) => node.id)).toEqual(["joined:elsewhere", "joined:missing"])
+    expect(joinedNodes[0].data).toEqual({ taskId: "elsewhere", task: elsewhere })
+    // A run that can't be loaded stays as a placeholder with only its id.
+    expect(joinedNodes[1].data).toEqual({ taskId: "missing", task: undefined })
+    expect(nodes.filter((node) => node.type === "taskNode").map((node) => node.id)).toEqual(["root", "child"])
+
+    const dashed = edges.filter((edge) => edge.style?.strokeDasharray)
+    expect(dashed.map((edge) => [edge.source, edge.target])).toEqual([
+      ["root", "joined:elsewhere"],
+      ["root", "joined:missing"],
+      ["child", "joined:elsewhere"],
+      ["child", "root"],
+    ])
+    expect(edges.find((edge) => edge.id === "root>child")?.style).toBeUndefined()
+  })
+
+  it("keeps joined nodes off the rows of the tree", () => {
+    const { nodes } = getFlowGraph([root, child], "root", undefined, [elsewhere])
+    const treeRows = new Set(nodes.filter((node) => node.type === "taskNode").map((node) => node.position.y))
+
+    for (const node of nodes.filter((candidate) => candidate.type === "joinedTaskNode"))
+      expect(treeRows.has(node.position.y)).toBe(false)
+  })
+
+  it("draws nothing extra without joins", () => {
+    const { nodes, edges } = getFlowGraph([createTask({ id: "root" })], "root", undefined, [elsewhere])
+    expect(nodes).toHaveLength(1)
+    expect(edges).toHaveLength(0)
+  })
+})

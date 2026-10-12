@@ -11,6 +11,13 @@ from surrealdb_client import get_db
 
 logger = logging.getLogger(__name__)
 
+# Custom event a task sends with ``self.send_event("task-joined", task_ids=[...])`` when it joins an
+# already active run instead of sending its own.
+JOINED_EVENT_TYPE = "task-joined"
+JOINED_TASKS_MAX = 100
+# Matches the longest task id the read API accepts.
+JOINED_TASK_ID_MAX_LENGTH = 256
+
 TERMINAL_EVENT_TYPES = frozenset({"task-succeeded", "task-failed", "task-revoked", "task-rejected"})
 TERMINAL_TASK_STATES = ("SUCCESS", "FAILURE", "REVOKED", "REJECTED", "IGNORED")
 TERMINAL_TASK_STATES_SQL = "[" + ", ".join(f"'{state}'" for state in TERMINAL_TASK_STATES) + "]"
@@ -231,7 +238,14 @@ class SurrealDBIngester:
                 event_type = event.get("type", "")
                 category = event_type.split("-", 1)[0] if "-" in event_type else ""
 
-                if category == "task":
+                if event_type == JOINED_EVENT_TYPE:
+                    # A join never changes state or workflow membership, so it skips the summary recompute.
+                    q, p = build_task_joined_update(event, i)
+                    if q:
+                        event_queries.append(q)
+                        event_params.update(p)
+
+                elif category == "task":
                     q, p = build_task_upsert(event, i, search_indexing_enabled=self.search_indexing_enabled)
                     if q:
                         event_queries.append(q)
@@ -455,6 +469,34 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
             f" WHERE ${p}_previous.workflow_id != NONE AND ${p}_previous.workflow_id != ${p}_workflow_id"
             f" AND (SELECT VALUE id FROM task WHERE workflow_id = ${p}_previous.workflow_id LIMIT 1) = []"
         )
+    return query, params
+
+
+def build_task_joined_update(event: dict, idx: int) -> tuple[str, dict]:
+    """Build an UPDATE that adds the runs a task joined to its record.
+
+    UPDATE never creates a record, so a join reported by a task Celery Insights has not seen is dropped
+    instead of failing the batch on the schema's required task fields.
+    """
+    task_id = event.get("uuid")
+    reported = event.get("task_ids")
+    if not task_id or not isinstance(reported, list):
+        return "", {}
+    valid = (
+        joined_id
+        for joined_id in reported
+        if isinstance(joined_id, str) and 0 < len(joined_id) <= JOINED_TASK_ID_MAX_LENGTH and joined_id != task_id
+    )
+    joined = list(dict.fromkeys(valid))[:JOINED_TASKS_MAX]
+    if not joined:
+        return "", {}
+
+    p = f"jn{idx}"
+    params = {f"{p}_id": task_id, f"{p}_ids": joined}
+    query = (
+        f"UPDATE type::record('task', ${p}_id) SET "
+        f"joined_tasks = array::slice(array::union(joined_tasks ?? [], ${p}_ids), 0, {JOINED_TASKS_MAX})"
+    )
     return query, params
 
 

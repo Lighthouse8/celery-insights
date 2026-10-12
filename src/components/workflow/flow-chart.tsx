@@ -1,4 +1,4 @@
-import TaskNode from "@components/workflow/task-node"
+import TaskNode, { JoinedTaskNode } from "@components/workflow/task-node"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@components/ui/tooltip"
 import { useIsDark } from "@hooks/use-is-dark"
 import type { Task } from "@/types/surreal-records"
@@ -43,6 +43,14 @@ function createEdge(sourceId: string, targetId: string): Edge {
   }
 }
 
+const JOINED_NODE_PREFIX = "joined:"
+
+const createJoinedEdge = (sourceId: string, targetId: string): Edge => ({
+  ...createEdge(sourceId, targetId),
+  id: `${sourceId}~>${targetId}`,
+  style: { strokeDasharray: "6 4" },
+})
+
 const getChildMap = (tasks: Task[]): Map<string, Task[]> => {
   const map = new Map<string, Task[]>()
   for (const task of tasks)
@@ -59,6 +67,7 @@ export const getFlowGraph = (
   tasks: Task[],
   rootTaskId: string,
   initialPosition?: XYPosition,
+  joinedTasks: Task[] = [],
 ): {
   nodes: Node[]
   edges: Edge[]
@@ -103,9 +112,40 @@ export const getFlowGraph = (
     return row
   }
 
+  // Joined runs belong to other workflows: drawn after the tree, never part of it.
+  const addJoinedRuns = () => {
+    const joinedById = new Map(joinedTasks.map((task) => [task.id, task]))
+    const joinedNodes = new Map<string, Node>()
+    for (const node of nodes) {
+      const task = node.data as unknown as Task
+      // A "-replaced" duplicate shares its task; only the task's own node draws the joins.
+      if (node.id !== task.id) continue
+      for (const joinedId of task.joined_tasks ?? []) {
+        if (visited.has(joinedId)) {
+          edges.push(createJoinedEdge(task.id, joinedId))
+          continue
+        }
+        const nodeId = JOINED_NODE_PREFIX + joinedId
+        if (!joinedNodes.has(nodeId))
+          joinedNodes.set(nodeId, {
+            id: nodeId,
+            type: "joinedTaskNode",
+            position: { x: node.position.x + COLUMN_WIDTH, y: nextLeafRow++ * ROW_HEIGHT },
+            // A run that couldn't be loaded (never recorded, deleted, or not readable) stays a placeholder.
+            data: { taskId: joinedId, task: joinedById.get(joinedId) },
+            connectable: false,
+            deletable: false,
+          })
+        edges.push(createJoinedEdge(task.id, nodeId))
+      }
+    }
+    nodes.push(...joinedNodes.values())
+  }
+
   const rootTask = taskMap.get(rootTaskId)
   if (rootTask) {
     const rootRow = visitTask(rootTask, initialPosition?.x ?? 0)
+    addJoinedRuns()
     const offset = ((initialPosition?.y ?? 0) - rootRow) * ROW_HEIGHT
     for (const node of nodes) node.position.y += offset
   }
@@ -134,12 +174,14 @@ interface FlowChartProps {
   tasks: Task[]
   rootTaskId: string
   currentTaskId?: string
+  joinedTasks?: Task[]
 }
 
 const nodeTypes = {
   taskNode: TaskNode,
+  joinedTaskNode: JoinedTaskNode,
 }
-const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId }) => {
+const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId, joinedTasks }) => {
   const flow = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[])
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[])
@@ -163,7 +205,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
   const fitView = useCallback(() => flow.fitView({ duration: ZOOM_ANIMATION_SPEED }), [flow])
 
   useEffect(() => {
-    const graph = getFlowGraph(tasks, rootTaskId)
+    const graph = getFlowGraph(tasks, rootTaskId, undefined, joinedTasks)
     setNodes(graph.nodes)
     setEdges(graph.edges)
     if (!isInitialized && currentTaskId) {
@@ -176,7 +218,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
     }
     setInitialized(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, rootTaskId, setNodes, setEdges, flow])
+  }, [tasks, rootTaskId, joinedTasks, setNodes, setEdges, flow])
 
   useEffect(() => {
     if (!currentTaskId) fitView()

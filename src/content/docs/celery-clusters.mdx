@@ -25,6 +25,26 @@ app.conf.result_extended = True
 app.conf.enable_utc = True
 ```
 
+## Joined runs
+
+A task that deduplicates work may skip sending a child because an identical run is already active, and wait on that run instead. Report the join with a custom `task-joined` event from the joining task, so the workflow graph can show where the work went.
+
+```python
+@app.task(bind=True)
+def refresh_reports(self, account_id):
+    active = find_active_refresh(account_id)
+    if active is not None:
+        self.send_event("task-joined", task_ids=[active.id])
+        return
+    refresh_account.delay(account_id)
+```
+
+- `task_ids` is a list of task ids. Several events from one task add up; repeated ids are stored once, up to 100 per task. Ids that are not non-empty strings of at most 256 characters, and the task's own id, are skipped.
+- The task page lists joined runs under Related Tasks. The workflow graph draws each joined run as a dashed node labelled "joined run", linked from the joining task by a dashed edge; select it to open that run and its own workflow.
+- A joined run Celery Insights has not recorded is drawn as a dashed placeholder with its short id. Joined runs are not workflow members and don't count toward the workflow's summary.
+- Joined task ids are relationships, so users whose read scope limits which tasks they see don't see them, like parent and child ids.
+- A join reported by a task Celery Insights has not recorded yet is ignored, but the raw event stays visible on the Live Events page.
+
 ## Standard RabbitMQ or Redis deployments
 
 If the cluster exposes one broker URL and one result backend URL, env vars are usually enough.

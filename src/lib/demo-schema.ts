@@ -35,6 +35,8 @@ DEFINE FIELD OVERWRITE root_id ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE workflow_id ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE parent_id ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE children ON task TYPE array<string> DEFAULT [];
+-- Active runs this task joined (task-joined events) instead of sending its own.
+DEFINE FIELD OVERWRITE joined_tasks ON task TYPE option<array<string>>;
 DEFINE FIELD OVERWRITE worker ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE result ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE result_truncated ON task TYPE bool DEFAULT false;

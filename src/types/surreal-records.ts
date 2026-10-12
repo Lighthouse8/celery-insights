@@ -44,6 +44,8 @@ export interface SurrealTask {
   workflow_id?: string | null
   parent_id?: string | null
   children: string[]
+  /** Active runs this task joined instead of sending its own (task-joined events) */
+  joined_tasks?: string[] | null
   worker?: string | null
   result?: string | null
   result_truncated?: boolean
@@ -230,6 +232,7 @@ export interface Task {
   workflow_id?: string
   parent_id?: string
   children: string[]
+  joined_tasks?: string[]
   worker?: string
   result?: string
   result_truncated?: boolean
@@ -284,6 +287,7 @@ export const parseTask = (raw: SurrealTask): Task => ({
   workflow_id: raw.workflow_id || raw.root_id || extractId(raw.id),
   parent_id: raw.parent_id || undefined,
   children: raw.children,
+  joined_tasks: raw.joined_tasks || undefined,
   worker: raw.worker || undefined,
   result: raw.result || undefined,
   result_truncated: raw.result_truncated,

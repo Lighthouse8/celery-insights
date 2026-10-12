@@ -234,6 +234,28 @@ try {
     const read = buildRead({ operation, from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", taskId: "sample" })
     await scoped.query(read.sql, read.bindings)
   }
+  // Joined runs belong to other workflows and are read through the same scoped projection as members.
+  await root.query("UPDATE task:sample SET joined_tasks = ['hidden', 'ghost']")
+  const workflowRead = buildRead({ operation: "task-workflow", taskId: "sample" })
+  const joinedRuns = async (db: Pick<Surreal, "query">) => {
+    const results = await db.query(workflowRead.sql, workflowRead.bindings).collect()
+    return (results.at(-1) as { joined: Array<Record<string, unknown>> }).joined
+  }
+  const allJoined = await joinedRuns(root)
+  assert.deepEqual(
+    allJoined.map((task) => String(task.id)),
+    ["task:hidden"],
+    "unknown joined runs are omitted",
+  )
+  assert.equal(allJoined[0].result, "hidden-result")
+  const payloadJoined = await joinedRuns(scopedDatabase(root, { deny_fields: ["task.result.read"] }))
+  assert.deepEqual(
+    payloadJoined.map((task) => String(task.id)),
+    ["task:hidden"],
+  )
+  assert.equal(payloadJoined[0].result, undefined)
+  assert.deepEqual(await joinedRuns(scoped), [], "task scopes hide joined runs like other relationships")
+  await root.query("UPDATE task:sample SET joined_tasks = NONE")
   await root.query(
     "UPDATE task:sample SET args = 'private-input', kwargs = 'private-kwargs', exception = 'private-failure', traceback = 'private-traceback'; UPDATE worker:sample SET inspect = $inspect;",
     { inspect: JSON.stringify({ private: "private-worker" }) },

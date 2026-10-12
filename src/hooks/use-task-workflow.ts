@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 interface TaskWorkflowSnapshot {
   members: SurrealTask[]
+  /** Runs the members joined; they belong to other workflows and are not members. */
+  joined: SurrealTask[]
   task: SurrealTask | null
   workflow: SurrealWorkflow | null
 }
@@ -22,6 +24,7 @@ const EMPTY_RESULT: TaskWorkflowSnapshot = {
   task: null,
   workflow: null,
   members: [],
+  joined: [],
 }
 
 export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
@@ -31,6 +34,7 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
   const [error, setError] = useState<Error | null>(null)
   const subscriptionRef = useRef<LiveSubscription | null>(null)
   const workflowIdRef = useRef<string | null>(null)
+  const joinedIdsRef = useRef<Set<string>>(new Set())
 
   const fetchSnapshot = useCallback(async () => {
     if (!taskId) {
@@ -43,6 +47,7 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
       const results = await queryObservation<
         Array<null | {
           members?: SurrealTask[]
+          joined?: SurrealTask[]
           task?: SurrealTask | null
           workflow?: SurrealWorkflow | null
         }>
@@ -51,10 +56,13 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         { operation: "task-workflow", taskId },
         `LET $task = (SELECT * FROM type::record('task', $taskId))[0];
                  LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId;
+                 LET $members = SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC;
+                 LET $joinedIds = array::slice(array::distinct(array::filter(array::flatten($members.joined_tasks), |$id| $id != NONE)), 0, 100);
                  RETURN {
                     task: $task,
                     workflow: (SELECT * FROM type::record('workflow', $workflowId))[0],
-                    members: SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC
+                    members: $members,
+                    joined: array::filter(array::map($joinedIds, |$id| (SELECT * FROM type::record('task', $id))[0]), |$joined| $joined != NONE)
                 };`,
         { taskId },
       )
@@ -64,8 +72,10 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         task: result?.task ?? null,
         workflow: result?.workflow ?? null,
         members: Array.isArray(result?.members) ? result.members : [],
+        joined: Array.isArray(result?.joined) ? result.joined : [],
       }
       workflowIdRef.current = next.task?.workflow_id || next.task?.root_id || next.task?.id?.toString() || taskId
+      joinedIdsRef.current = new Set(next.joined.map((joined) => extractId(joined.id)))
       setData(next)
       setError(null)
     } catch (err) {
@@ -99,7 +109,7 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         const recordId = extractId(record.id)
         const workflowId = workflowIdRef.current
         const matchesWorkflow = !!workflowId && (record.workflow_id || record.root_id || recordId) === workflowId
-        if ((recordId === taskId || matchesWorkflow) && !refreshTimer) {
+        if ((recordId === taskId || matchesWorkflow || joinedIdsRef.current.has(recordId)) && !refreshTimer) {
           refreshTimer = setTimeout(() => {
             refreshTimer = undefined
             void fetchSnapshot()
