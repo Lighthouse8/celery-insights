@@ -1,11 +1,18 @@
 import TaskAvatar from "@components/task/task-avatar"
 import { runningProgressPercent } from "@components/task/task-progress"
 import { Progress } from "@components/ui/progress"
+import { TaskNodeFieldsContext } from "@hooks/use-task-node-fields"
+import {
+  TASK_NODE_LABEL_GAP,
+  TASK_NODE_LABEL_LINE_HEIGHT,
+  TASK_NODE_LABEL_WIDTH,
+  taskNodeLabels,
+} from "@lib/task-node-fields"
 import { cn } from "@lib/utils"
 import useSettingsStore from "@stores/use-settings-store"
 import type { Task } from "@/types/surreal-records"
 import { Link } from "@tanstack/react-router"
-import React from "react"
+import React, { useContext, useMemo } from "react"
 import { Handle, type Node, type NodeProps, Position } from "@xyflow/react"
 
 type TaskNodeType = Node<Task & Record<string, unknown>, "taskNode" | "joinedRunNode">
@@ -14,6 +21,8 @@ type TaskNodeType = Node<Task & Record<string, unknown>, "taskNode" | "joinedRun
 const TaskNode: React.FC<NodeProps<TaskNodeType> & { joined?: boolean }> = ({ data, joined }) => {
   const showTaskProgress = useSettingsStore((state) => state.showTaskProgress)
   const progressPercent = showTaskProgress ? runningProgressPercent(data) : undefined
+  const fields = useContext(TaskNodeFieldsContext)
+  const labels = useMemo(() => taskNodeLabels(data, fields), [data, fields])
   return (
     <>
       <Handle type="target" position={Position.Left} />
@@ -34,15 +43,28 @@ const TaskNode: React.FC<NodeProps<TaskNodeType> & { joined?: boolean }> = ({ da
           // Absolutely positioned so the bar never changes the node size the layout was computed for.
           <Progress value={progressPercent} className="absolute -bottom-2 left-0 h-1" aria-label="Task progress" />
         ) : null}
-        {joined ? (
-          // Absolutely positioned so the label never changes the node size the layout was computed for.
-          <Link
-            to="/tasks/$taskId"
-            params={{ taskId: data.id }}
-            className="absolute top-full left-1/2 mt-3 -translate-x-1/2 whitespace-nowrap text-[10px] text-muted-foreground hover:underline"
+        {joined || labels.length ? (
+          // Absolutely positioned so the labels never change the node size the layout was computed for.
+          <div
+            className="absolute top-full left-1/2 flex -translate-x-1/2 flex-col items-center text-[10px] text-muted-foreground"
+            style={{ marginTop: TASK_NODE_LABEL_GAP, lineHeight: `${TASK_NODE_LABEL_LINE_HEIGHT}px` }}
           >
-            joined run
-          </Link>
+            {joined ? (
+              <Link to="/tasks/$taskId" params={{ taskId: data.id }} className="whitespace-nowrap hover:underline">
+                joined run
+              </Link>
+            ) : null}
+            {labels.map((label) => (
+              <span
+                key={label.path}
+                title={label.title}
+                className="truncate rounded-sm bg-background/80 px-1"
+                style={{ maxWidth: TASK_NODE_LABEL_WIDTH }}
+              >
+                {label.text}
+              </span>
+            ))}
+          </div>
         ) : null}
       </div>
       <Handle type="source" position={Position.Right} />

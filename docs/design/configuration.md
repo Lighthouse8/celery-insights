@@ -82,7 +82,7 @@ Additional settings and distinctions:
 | Python `.env` | Explicit development-only launcher input, translated through the same module; no independent production Python loading |
 | Python logging `LOG_FORMAT` / `LOG_LEVEL` | Same resolved logging snapshot as Bun; no import-time env read |
 | `VITE_DEMO_MODE` / browser demo preference | Retire production build toggle in favor of file-only `ui.demo_available`; isolated demo adapter only, never changes server authorization |
-| Theme/banner/raw events defaults | `ui.defaults.theme`, `.hide_welcome_banner`, `.raw_events_limit`; browser overrides are separate per-user state |
+| Theme/banner/raw events/task node label defaults | `ui.defaults.theme`, `.hide_welcome_banner`, `.raw_events_limit`, `.task_node_labels`, `.task_node_fields`; browser overrides are separate per-user state |
 | Explorer column/filter/layout preferences | Per-user data; no operator setting unless an explicit supported default is added to the registry |
 | Retention UI changes | Transitional temporary runtime override; ownership rules below |
 

@@ -28,6 +28,18 @@ describe("Bun configuration resolver", () => {
       }).config.searchIndexingEnabled,
     ).toBe(false)
   })
+  it("accepts task node label defaults from TOML and the environment", () => {
+    const toml = '[ui.defaults]\ntask_node_labels = true\ntask_node_fields = "type,kwargs.channel:ch"'
+    expect(fromToml(toml).config).toMatchObject({ uiTaskNodeLabels: true, uiTaskNodeFields: "type,kwargs.channel:ch" })
+    expect(
+      fromToml(toml, {
+        CELERY_INSIGHTS_UI_TASK_NODE_LABELS: "false",
+        CELERY_INSIGHTS_UI_TASK_NODE_FIELDS: "kwargs.resource_id,args.0",
+      }).config,
+    ).toMatchObject({ uiTaskNodeLabels: false, uiTaskNodeFields: "kwargs.resource_id,args.0" })
+    expect(() => fromToml("", { CELERY_INSIGHTS_UI_TASK_NODE_FIELDS: "type,kwargs." })).toThrow(/kwargs\./)
+  })
+
   it("validates optional OPA configuration and redacts service credentials", () => {
     expect(fromToml("").config.opaDecisionUrl).toBeUndefined()
     const resolved = fromToml(

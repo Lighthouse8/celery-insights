@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { randomBytes } from "node:crypto"
+import { invalidTaskNodeFields } from "../src/lib/task-node-fields"
 
 /**
  * Coerces string/boolean values to boolean.
@@ -78,6 +79,18 @@ export const flatConfigSchema = z.object({
   uiTheme: z.enum(["light", "dark", "system"]).optional(),
   uiHideWelcomeBanner: z.boolean().optional(),
   uiRawEventsLimit: z.number().int().positive().optional(),
+  uiTaskNodeLabels: z.boolean().optional(),
+  uiTaskNodeFields: z
+    .string()
+    .superRefine((spec, context) => {
+      const invalid = invalidTaskNodeFields(spec)
+      if (invalid.length)
+        context.addIssue({
+          code: "custom",
+          message: `Expected task attributes, kwargs.<name> or args.<index> fields; got ${invalid.join(", ")}`,
+        })
+    })
+    .optional(),
   publicUrl: z.string().url().optional(),
   opaDecisionUrl: z
     .string()

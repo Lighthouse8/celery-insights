@@ -18,8 +18,24 @@ describe("SettingsPanel", () => {
     expect(screen.getByText("Demo mode")).toBeInTheDocument()
     expect(screen.getByText("Live events limit")).toBeInTheDocument()
     expect(screen.getByText("Task progress")).toBeInTheDocument()
-    expect(screen.getByText("Experimental")).toBeInTheDocument()
+    expect(screen.getAllByText("Experimental")).toHaveLength(3)
     expect(screen.getByRole("button", { name: /start tour/i })).toBeInTheDocument()
+  })
+
+  it("switches task node labels on and names ignored fields", async () => {
+    const user = userEvent.setup()
+    render(<SettingsPanel />)
+
+    const fields = screen.getByRole("textbox", { name: "Task node fields" })
+    expect(fields).toBeDisabled()
+    await user.click(screen.getByRole("switch", { name: /show task node labels/i }))
+    expect(useSettingsStore.getState().taskNodeLabels).toBe(true)
+
+    await user.clear(fields)
+    await user.type(fields, "type,wroker")
+    expect(useSettingsStore.getState().taskNodeFields).toBe("type,wroker")
+    expect(screen.getByText("Ignoring wroker")).toBeInTheDocument()
+    expect(fields).toHaveAttribute("aria-invalid", "true")
   })
 
   it("updates the welcome banner preference", async () => {

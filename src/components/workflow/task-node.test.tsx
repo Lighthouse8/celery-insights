@@ -1,9 +1,11 @@
-import { render } from "@test-utils"
+import { render, screen } from "@test-utils"
 import { createTask } from "@test-fixtures"
 import { TaskState, type Task } from "@/types/surreal-records"
 import { ReactFlowProvider } from "@xyflow/react"
 import type { ComponentProps } from "react"
 import useSettingsStore, { resetSettings } from "@stores/use-settings-store"
+import { TaskNodeFieldsContext } from "@hooks/use-task-node-fields"
+import { parseTaskNodeFields } from "@lib/task-node-fields"
 import TaskNode from "./task-node"
 
 vi.mock("@tanstack/react-router", () => ({
@@ -49,5 +51,39 @@ describe("TaskNode", () => {
   it("draws no bar when the total is unknown", () => {
     renderNode(createTask({ state: TaskState.STARTED, progress: { current: 3, updated_at: new Date(), sections: [] } }))
     expect(progressBar()).toBeNull()
+  })
+})
+
+const renderLabelledNode = (spec: string) => {
+  const task = createTask({
+    type: "resources.marketing.channel_run.start_resource_run",
+    kwargs: "{'channel': 'facebook_ads', 'organization_id': 12}",
+  })
+  const props = { id: task.id, data: task } as unknown as ComponentProps<typeof TaskNode>
+  return render(
+    <ReactFlowProvider>
+      <TaskNodeFieldsContext.Provider value={parseTaskNodeFields(spec)}>
+        <TaskNode {...props} />
+      </TaskNodeFieldsContext.Provider>
+    </ReactFlowProvider>,
+  )
+}
+
+describe("TaskNode labels", () => {
+  it("draws a label line per field with the full value as its title", () => {
+    renderLabelledNode("type,kwargs.channel,kwargs.organization_id:org,kwargs.missing")
+
+    expect(screen.getByText("start_resource_run")).toHaveAttribute(
+      "title",
+      "resources.marketing.channel_run.start_resource_run",
+    )
+    expect(screen.getByText("channel=facebook_ads")).toHaveAttribute("title", "facebook_ads")
+    expect(screen.getByText("org=12")).toBeInTheDocument()
+    expect(screen.queryByText(/missing/)).not.toBeInTheDocument()
+  })
+
+  it("draws no labels without fields", () => {
+    const { container } = renderLabelledNode("")
+    expect(container.querySelectorAll("span[title]")).toHaveLength(0)
   })
 })

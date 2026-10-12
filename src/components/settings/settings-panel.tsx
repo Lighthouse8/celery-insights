@@ -3,6 +3,7 @@ import { LimitSelect } from "@components/raw_events/limit-select"
 import ThemeSelector from "@components/settings/theme-selector"
 import { Badge } from "@components/ui/badge"
 import { Button } from "@components/ui/button"
+import { Input } from "@components/ui/input"
 import { Switch } from "@components/ui/switch"
 import useSettingsStore, {
   resetSettings,
@@ -10,6 +11,7 @@ import useSettingsStore, {
   useDeploymentSettings,
 } from "@stores/use-settings-store"
 import { startTour } from "@stores/use-tour-store"
+import { invalidTaskNodeFields } from "@lib/task-node-fields"
 
 const SettingRow = ({
   title,
@@ -18,7 +20,7 @@ const SettingRow = ({
   helper,
   experimental = false,
 }: {
-  title: string
+  title: React.ReactNode
   description: string
   control: React.ReactNode
   helper?: string
@@ -43,6 +45,9 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
   const rawEventsLimit = useSettingsStore((state) => state.rawEventsLimit)
   const showTaskProgress = useSettingsStore((state) => state.showTaskProgress)
   const demoAvailable = useDeploymentSettings((state) => state.demoAvailable)
+  const taskNodeLabels = useSettingsStore((state) => state.taskNodeLabels)
+  const taskNodeFields = useSettingsStore((state) => state.taskNodeFields)
+  const invalidFields = invalidTaskNodeFields(taskNodeFields)
 
   return (
     <Panel title="Workspace" hideHeader={hideHeader}>
@@ -97,6 +102,39 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
             <LimitSelect
               limit={rawEventsLimit}
               setLimit={(limit) => useSettingsStore.setState({ rawEventsLimit: limit })}
+            />
+          }
+        />
+        <SettingRow
+          title="Task node labels"
+          experimental
+          description="Show task fields under each task in the workflow graph."
+          helper={taskNodeLabels ? "Currently shown" : "Currently hidden"}
+          control={
+            <Switch
+              aria-label="Show task node labels"
+              checked={taskNodeLabels}
+              onCheckedChange={(checked) => useSettingsStore.setState({ taskNodeLabels: checked })}
+            />
+          }
+        />
+        <SettingRow
+          title="Task node fields"
+          experimental
+          description="Comma-separated fields for task node labels: a task attribute (type, state, worker, routing_key, …), kwargs.<name>, or args.<index>. Add :alias to rename a field in its label."
+          helper={
+            invalidFields.length
+              ? `Ignoring ${invalidFields.join(", ")}`
+              : "Switch fields on and off from the workflow graph's label control."
+          }
+          control={
+            <Input
+              aria-label="Task node fields"
+              className="w-80 font-mono text-xs"
+              value={taskNodeFields}
+              disabled={!taskNodeLabels}
+              aria-invalid={invalidFields.length > 0}
+              onChange={(event) => useSettingsStore.setState({ taskNodeFields: event.target.value })}
             />
           }
         />

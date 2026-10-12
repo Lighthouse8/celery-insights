@@ -1,13 +1,17 @@
 import { createTask } from "@test-fixtures"
 import { MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
+import { TASK_NODE_LABEL_GAP } from "@lib/task-node-fields"
 import { TaskState } from "@/types/surreal-records"
 import {
   canvasMinZoom,
+  flowGrid,
   focusViewport,
   getFlowGraph,
   getLayoutKey,
   hiddenJoinsNote,
+  labelledBounds,
   refreshNodeData,
+  respaceNodes,
 } from "./flow-chart"
 
 describe("getFlowGraph", () => {
@@ -53,6 +57,51 @@ describe("getFlowGraph", () => {
     expect(edges.filter((edge) => edge.target === "meta-finalize")).toMatchObject([
       { source: "meta-hierarchy-1", target: "meta-finalize" },
     ])
+  })
+
+  it("spaces rows and columns for task node labels", () => {
+    const tasks = [
+      createTask({ id: "root" }),
+      createTask({ id: "child-a", parent_id: "root" }),
+      createTask({ id: "child-b", parent_id: "root" }),
+    ]
+    const position = (nodes: { id: string; position: { x: number; y: number } }[], id: string) =>
+      nodes.find((node) => node.id === id)!.position
+
+    const compact = getFlowGraph(tasks, "root").nodes
+    expect(flowGrid(0)).toEqual({ columnWidth: 180, rowHeight: 100 })
+    expect(position(compact, "child-a").x).toBe(180)
+    expect(position(compact, "child-b").y - position(compact, "child-a").y).toBe(100)
+
+    const grid = flowGrid(4)
+    const labelled = getFlowGraph(tasks, "root", undefined, undefined, grid).nodes
+    expect(position(labelled, "child-a").x).toBe(grid.columnWidth)
+    expect(position(labelled, "child-b").y - position(labelled, "child-a").y).toBe(grid.rowHeight)
+    expect(grid.rowHeight).toBeGreaterThanOrEqual(100 + 4 * 14)
+  })
+
+  it("respaces laid-out and dragged nodes onto a new grid", () => {
+    const tasks = [
+      createTask({ id: "root" }),
+      createTask({ id: "child-a", parent_id: "root" }),
+      createTask({ id: "child-b", parent_id: "root" }),
+    ]
+    const grid = flowGrid(3)
+    const compact = getFlowGraph(tasks, "root").nodes
+    expect(respaceNodes(compact, flowGrid(0), grid).map((node) => node.position)).toEqual(
+      getFlowGraph(tasks, "root", undefined, undefined, grid).nodes.map((node) => node.position),
+    )
+    const dragged = { ...compact[0], position: { x: 90, y: -50 } }
+    expect(respaceNodes([dragged], flowGrid(0), grid)[0].position).toEqual({
+      x: (90 * grid.columnWidth) / 180,
+      y: (-50 * grid.rowHeight) / 100,
+    })
+  })
+
+  it("widens node bounds by the label overhang", () => {
+    const bounds = { x: 0, y: 0, width: 300, height: 160 }
+    expect(labelledBounds(bounds, 0)).toBe(bounds)
+    expect(labelledBounds(bounds, 3)).toEqual({ x: -80, y: 0, width: 460, height: 160 + TASK_NODE_LABEL_GAP + 3 * 14 })
   })
 
   it("centers a parent between child subtrees of different sizes", () => {
