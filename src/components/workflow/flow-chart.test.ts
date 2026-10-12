@@ -404,6 +404,42 @@ describe("getFlowGraph joined runs", () => {
     expect(canvasMinZoom(graph.nodes, width, height)).toBeLessThanOrEqual(viewport.zoom)
   })
 
+  it("frames a joined run below thousands of members, however far out that takes the zoom", () => {
+    // 9,999 leaf members put the joined run about 500,000px below the root, over 1,000 times a 400px canvas.
+    const root = createTask({ id: "root", joined_tasks: ["run"] })
+    const members = Array.from({ length: 9999 }, (_, index) =>
+      createTask({ id: `member-${String(index).padStart(4, "0")}`, parent_id: "root" }),
+    )
+    const run = createTask({ id: "run", workflow_id: "nightly" })
+    const graph = getFlowGraph([root, ...members], "root", undefined, {
+      ids: ["run"],
+      total: 1,
+      tasks: [run],
+      walked: ["run"],
+      cut: 0,
+    })
+    const [width, height] = [800, 400]
+
+    const viewport = focusViewport(graph.nodes, graph.joinedBelow, "root", width, height)!
+    for (const id of ["root", "joined:run"]) {
+      const { x, y } = graph.nodes.find((node) => node.id === id)!.position
+      expect(y * viewport.zoom + viewport.y).toBeGreaterThanOrEqual(0)
+      expect((y + 64) * viewport.zoom + viewport.y).toBeLessThanOrEqual(height)
+      expect(x * viewport.zoom + viewport.x).toBeGreaterThanOrEqual(0)
+      expect((x + 64) * viewport.zoom + viewport.x).toBeLessThanOrEqual(width)
+    }
+    expect(viewport.zoom).toBeLessThan(0.001)
+    expect(canvasMinZoom(graph.nodes, width, height)).toBeGreaterThan(0)
+    expect(canvasMinZoom(graph.nodes, width, height)).toBeLessThanOrEqual(viewport.zoom)
+  })
+
+  it("keeps the default minimum zoom without a graph or a canvas size", () => {
+    expect(canvasMinZoom([], 800, 400)).toBe(0.1)
+    const { nodes } = getFlowGraph([createTask({ id: "root" })], "root")
+    expect(canvasMinZoom(nodes, 0, 0)).toBe(0.1)
+    expect(canvasMinZoom(nodes, 10, 10)).toBe(0.1)
+  })
+
   it("draws exactly the runs the read chose, even ones its members don't link to", () => {
     // 10,001 members: the graph holds the newest 10,000, where the root joins b-000..b-099; the oldest, which
     // only the read sees, joins a-run. The read's first 100 ids are a-run and b-000..b-098.

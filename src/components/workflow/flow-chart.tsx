@@ -278,10 +278,8 @@ export const hiddenJoinsNote = (runs: number, links: number, branches = 0): stri
 }
 
 const FOCUS_ZOOM = 1
-// The canvas lets users zoom out at least this far, and further when the graph needs it to fit.
+// The canvas lets users zoom out at least this far, and as far as the whole graph needs to fit, however large.
 const MIN_ZOOM = 0.1
-// Below this nodes are sub-pixel; a graph needing less is framed only in part.
-const ZOOM_FLOOR = 0.001
 const FIT_PADDING = 0.1
 const ZOOM_ANIMATION_SPEED = 1000
 // A task node's footprint (60px avatar); laid-out positions are unmeasured top-left corners.
@@ -299,20 +297,19 @@ const boundsOf = (positions: XYPosition[]) => {
 }
 
 /** The canvas's minimum zoom: MIN_ZOOM, or less when the whole laid-out graph needs it to fit. */
-export const canvasMinZoom = (nodes: Node[], width: number, height: number): number =>
-  nodes.length && width && height
-    ? Math.min(
-        MIN_ZOOM,
-        getViewportForBounds(
-          boundsOf(nodes.map((node) => node.position)),
-          width,
-          height,
-          ZOOM_FLOOR,
-          FOCUS_ZOOM,
-          FIT_PADDING,
-        ).zoom,
-      )
-    : MIN_ZOOM
+export const canvasMinZoom = (nodes: Node[], width: number, height: number): number => {
+  if (!nodes.length || !width || !height) return MIN_ZOOM
+  const fit = getViewportForBounds(
+    boundsOf(nodes.map((node) => node.position)),
+    width,
+    height,
+    0,
+    FOCUS_ZOOM,
+    FIT_PADDING,
+  ).zoom
+  // No floor: a fit is positive however large the graph. A canvas too small for the padding gives none.
+  return fit > 0 && Number.isFinite(fit) ? Math.min(MIN_ZOOM, fit) : MIN_ZOOM
+}
 
 /**
  * The view that frames a task's node together with the joined runs laid out in its subtree, at most at FOCUS_ZOOM
