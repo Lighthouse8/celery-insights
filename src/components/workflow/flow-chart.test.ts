@@ -1,5 +1,5 @@
+import { render, waitFor } from "@test-utils"
 import { createTask } from "@test-fixtures"
-import { render } from "@test-utils"
 import { MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
 import { TASK_NODE_LABEL_GAP } from "@lib/task-node-fields"
 import { type Task, TaskState } from "@/types/surreal-records"
@@ -17,7 +17,7 @@ import FlowChart, {
   respaceNodes,
 } from "./flow-chart"
 
-const viewportMoves = vi.hoisted(() => ({ setCenter: vi.fn(), setViewport: vi.fn() }))
+const viewportMoves = vi.hoisted(() => ({ setCenter: vi.fn(), setViewport: vi.fn(), fitBounds: vi.fn() }))
 vi.mock("@xyflow/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@xyflow/react")>()
   // One stable wrapper per instance, as useReactFlow's own result is stable.
@@ -31,7 +31,42 @@ vi.mock("@xyflow/react", async (importOriginal) => {
     },
   }
 })
-vi.mock("@tanstack/react-router", () => ({ Link: () => null }))
+
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children }: { children?: React.ReactNode }) => children,
+}))
+
+describe("FlowChart", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it("fits the graph on mount once React Flow has measured the nodes", async () => {
+    // happy-dom lays nothing out: report every observed node as a 60px avatar.
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(60)
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(60)
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(target: Element) {
+          const entry = { target, contentRect: target.getBoundingClientRect() } as ResizeObserverEntry
+          queueMicrotask(() => this.callback([entry], this as unknown as ResizeObserver))
+        }
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+    viewportMoves.fitBounds.mockClear()
+    const tasks = [createTask({ id: "root" }), createTask({ id: "child", parent_id: "root" })]
+
+    render(createElement(ReactFlowProvider, null, createElement(FlowChart, { tasks, rootTaskId: "root" })))
+
+    await waitFor(() => expect(viewportMoves.fitBounds).toHaveBeenCalledTimes(1))
+    expect(viewportMoves.fitBounds.mock.calls[0][0]).toEqual({ x: 0, y: 0, width: 240, height: 60 })
+  })
+})
 
 describe("getFlowGraph", () => {
   it("keeps nested channel and resource branches in separate rows", () => {

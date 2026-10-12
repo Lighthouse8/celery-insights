@@ -43,6 +43,10 @@ describe("reprItems", () => {
       ]),
     )
     expect(reprItems("{}")).toEqual(new Map())
+    expect(reprItems("[ ]")).toEqual(new Map())
+    expect(reprItems("{ }")).toEqual(new Map())
+    expect(reprItems("(7, )")).toEqual(new Map([["0", "7"]]))
+    expect(reprItems("{'a': 1, }")).toEqual(new Map([["a", "1"]]))
     expect(reprItems(undefined)).toEqual(new Map())
     expect(reprItems("not a container")).toEqual(new Map())
   })
@@ -73,6 +77,20 @@ describe("reprItems", () => {
         ["organization_id", "3"],
       ]),
     )
+  })
+
+  it("splits thousands of strings after a \\' without a stack frame per string", () => {
+    const text = `('x\\'', ${"'',".repeat(2_700)})`
+    const nested = <T>(frames: number, run: () => T): T => (frames ? nested(frames - 1, run) : run())
+    // Run the split about 1,000 frames short of the deepest nesting that fits, as from a deep render. Under the
+    // length cap, a split that recurses once per string needs most of Node's stack and overflows there.
+    let depth = 0
+    try {
+      for (; ; depth += 1_000) nested(depth + 1_000, () => 0)
+    } catch {
+      // depth is the last nesting that fit.
+    }
+    expect(nested(depth - 1_000, () => reprItems(text)).size).toBe(2_701)
   })
 
   it("keeps the items before Celery's truncation marker", () => {

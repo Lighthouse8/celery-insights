@@ -60,7 +60,7 @@ export const invalidTaskNodeFields = (spec: string): string[] =>
     .filter((field) => !isFieldPath(field.path))
     .map((field) => field.path)
 
-// Longer serialized arguments get no labels: the split below recurses once per quoted string.
+// Longer serialized arguments (a custom argsrepr; Celery's own stops at 1 KiB) get no labels.
 const MAX_REPR_LENGTH = 8_192
 
 // Where each quoted string may close. JSON and repr escape every quote inside double quotes. Celery's saferepr
@@ -88,25 +88,40 @@ const closeCandidates = (text: string, start: number): number[] => {
  * (bytes or a custom __repr__ with a stray quote) takes the first candidate.
  */
 const quotedStrings = (text: string) => {
-  const splits = new Map<number, boolean>()
-  const splitsFrom = (start: number): boolean => {
-    const quote = /['"]/g
-    quote.lastIndex = start
-    const next = quote.exec(text)
-    // saferepr only writes a backslash inside a string, so one outside every string rejects the reading.
-    if (text.slice(start, next?.index).includes("\\")) return false
-    if (!next) return true
-    const known = splits.get(start)
-    if (known !== undefined) return known
-    const result = closeCandidates(text, next.index).some(splitsFrom)
-    splits.set(start, result)
+  // splits[index]: the text from index on splits. One right-to-left pass fills it, so a reading looks up the
+  // readings after it rather than recursing through every later string (a stack frame each), and it tracks
+  // closeCandidates' ends as it goes rather than rescanning them per quote (quadratic on a run of `\'`).
+  let splits: boolean[] | undefined
+  const fillSplits = () => {
+    const result: boolean[] = []
+    // Where a double-quoted string read from index closes, outside an escape.
+    const doubleClose: number[] = []
+    // Whether a single-quoted string opened before the nearest ' has a candidate end from there on that splits.
+    let singleSplits = false
+    result[text.length] = true
+    for (let index = text.length - 1; index >= 0; index--) {
+      const character = text[index]
+      doubleClose[index] =
+        character === '"' ? index : character === "\\" ? doubleClose[index + 2] : doubleClose[index + 1]
+      if (character === "'") {
+        result[index] = singleSplits
+        singleSplits = result[index + 1] || (text[index - 1] === "\\" && singleSplits)
+      } else if (character === '"') {
+        const close = doubleClose[index + 1]
+        result[index] = close !== undefined && result[close + 1]
+      } else {
+        // saferepr only writes a backslash inside a string, so one outside every string rejects the reading.
+        result[index] = character !== "\\" && result[index + 1]
+      }
+    }
     return result
   }
   return (start: number): number => {
     const candidates = closeCandidates(text, start)
     // Without a backslash every string has one end.
     if (candidates.length < 2) return candidates[0] ?? text.length
-    return candidates.find(splitsFrom) ?? candidates[0]
+    const readings = (splits ??= fillSplits())
+    return candidates.find((end) => readings[end]) ?? candidates[0]
   }
 }
 
@@ -154,7 +169,8 @@ export const reprItems = (text: string | undefined): Map<string, string> => {
     }
     const end = itemEnd(text, index, false, quotedEnd)
     const raw = text.slice(index, end).trim()
-    if (raw === "...") break
+    // Nothing before the close: an empty container (`[ ]`) or a trailing comma (`(7, )`).
+    if (!raw || raw === "...") break
     if (!items.has(key)) items.set(key, displayValue(raw))
     index = text[end] === "," ? end + 1 : end
   }
