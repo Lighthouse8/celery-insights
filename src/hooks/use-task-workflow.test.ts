@@ -76,6 +76,8 @@ describe("useTaskWorkflow", () => {
               workflow: null,
               members: [{ id: "task:root", workflow_id: "root", joined_tasks: ["other"] }],
               joined: [{ id: "task:other", workflow_id: "other" }],
+              joinedIds: ["other"],
+              joinedTotal: 1,
             },
           ],
     )
@@ -90,7 +92,7 @@ describe("useTaskWorkflow", () => {
     expect(snapshotCalls()).toBe(2)
   })
 
-  it("refreshes when a joined run that had no row yet first appears", async () => {
+  it("refreshes when a joined run the read chose first gets a row", async () => {
     mockQuery.mockImplementation(async (query: string) =>
       query.startsWith("LIVE")
         ? ["live-uuid"]
@@ -98,10 +100,13 @@ describe("useTaskWorkflow", () => {
             null,
             null,
             {
-              task: { id: "task:root", workflow_id: "root", joined_tasks: ["later"] },
+              task: { id: "task:root", workflow_id: "root" },
               workflow: null,
-              members: [{ id: "task:root", workflow_id: "root", joined_tasks: ["later"] }],
+              // The member that joined "later" is older than the members the read returns.
+              members: [{ id: "task:root", workflow_id: "root" }],
               joined: [],
+              joinedIds: ["later"],
+              joinedTotal: 1,
             },
           ],
     )

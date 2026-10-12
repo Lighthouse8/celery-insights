@@ -1,5 +1,5 @@
 import { createTask } from "@test-fixtures"
-import { joinedRunIds, MAX_JOINED_RUNS } from "@lib/joined-runs"
+import { MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
 import { TaskState } from "@/types/surreal-records"
 import { getFlowGraph, getLayoutKey, hiddenJoinsNote, refreshNodeData } from "./flow-chart"
 
@@ -290,14 +290,24 @@ describe("getLayoutKey", () => {
   it("changes when a member's joined runs change or a joined run loads, not when one changes state", () => {
     const joining = { ...child, joined_tasks: ["elsewhere"] }
     const elsewhere = createTask({ id: "elsewhere", workflow_id: "other", state: TaskState.STARTED })
-    const base = getLayoutKey([root, joining], "root", [elsewhere])
+    const chosen = { ids: ["elsewhere"], total: 1, tasks: [elsewhere] }
+    const base = getLayoutKey([root, joining], "root", chosen)
 
-    expect(getLayoutKey([root, { ...joining, joined_tasks: ["elsewhere", "more"] }], "root", [elsewhere])).not.toBe(
-      base,
-    )
-    expect(getLayoutKey([root, child], "root", [elsewhere])).not.toBe(base)
+    expect(getLayoutKey([root, { ...joining, joined_tasks: ["elsewhere", "more"] }], "root", chosen)).not.toBe(base)
+    expect(getLayoutKey([root, child], "root", chosen)).not.toBe(base)
     expect(getLayoutKey([root, joining], "root")).not.toBe(base)
-    expect(getLayoutKey([root, joining], "root", [{ ...elsewhere, state: TaskState.SUCCESS }])).toBe(base)
+    expect(getLayoutKey([root, joining], "root", { ...chosen, tasks: [] })).not.toBe(base)
+    expect(
+      getLayoutKey([root, joining], "root", { ...chosen, tasks: [{ ...elsewhere, state: TaskState.SUCCESS }] }),
+    ).toBe(base)
+  })
+
+  it("changes when the read chooses other joined runs or leaves out a different number", () => {
+    const chosen = { ids: ["a", "b"], total: 2, tasks: [] }
+    const base = getLayoutKey([root], "root", chosen)
+
+    expect(getLayoutKey([root], "root", { ...chosen, ids: ["a", "c"] })).not.toBe(base)
+    expect(getLayoutKey([root], "root", { ...chosen, total: 3 })).not.toBe(base)
   })
 })
 
@@ -321,7 +331,11 @@ describe("refreshNodeData", () => {
   it("swaps in a joined run's latest record without moving its node", () => {
     const root = createTask({ id: "root", joined_tasks: ["elsewhere", "missing"] })
     const elsewhere = createTask({ id: "elsewhere", workflow_id: "other", state: TaskState.STARTED })
-    const { nodes } = getFlowGraph([root], "root", undefined, [elsewhere])
+    const { nodes } = getFlowGraph([root], "root", undefined, {
+      ids: ["elsewhere", "missing"],
+      total: 2,
+      tasks: [elsewhere],
+    })
     const finished = { ...elsewhere, state: TaskState.SUCCESS }
 
     const refreshed = refreshNodeData(nodes, [root], [finished])
@@ -340,7 +354,7 @@ describe("refreshNodeData", () => {
     const root = createTask({ id: "root", joined_tasks: ["run-1"] })
     const member = createTask({ id: "joined:run-1", parent_id: "root" })
     const run = createTask({ id: "run-1", workflow_id: "other", state: TaskState.STARTED })
-    const { nodes } = getFlowGraph([root, member], "root", undefined, [run])
+    const { nodes } = getFlowGraph([root, member], "root", undefined, { ids: ["run-1"], total: 1, tasks: [run] })
     const finished = { ...run, state: TaskState.SUCCESS }
 
     const refreshed = refreshNodeData(nodes, [root, member], [finished])
@@ -354,9 +368,10 @@ describe("getFlowGraph joined runs", () => {
   const root = createTask({ id: "root", joined_tasks: ["elsewhere", "missing"] })
   const child = createTask({ id: "child", parent_id: "root", joined_tasks: ["elsewhere", "root"] })
   const elsewhere = createTask({ id: "elsewhere", workflow_id: "other" })
+  const chosen = { ids: ["elsewhere", "missing"], total: 2, tasks: [elsewhere] }
 
   it("draws joined runs as dashed extra nodes outside the workflow tree", () => {
-    const { nodes, edges } = getFlowGraph([root, child], "root", undefined, [elsewhere])
+    const { nodes, edges } = getFlowGraph([root, child], "root", undefined, chosen)
 
     const joinedNodes = nodes.filter((node) => node.type === "joinedTaskNode")
     expect(joinedNodes.map((node) => node.id)).toEqual(["joined:elsewhere", "joined:missing"])
@@ -376,45 +391,57 @@ describe("getFlowGraph joined runs", () => {
   })
 
   it("keeps joined nodes off the rows of the tree", () => {
-    const { nodes } = getFlowGraph([root, child], "root", undefined, [elsewhere])
+    const { nodes } = getFlowGraph([root, child], "root", undefined, chosen)
     const treeRows = new Set(nodes.filter((node) => node.type === "taskNode").map((node) => node.position.y))
 
     for (const node of nodes.filter((candidate) => candidate.type === "joinedTaskNode"))
       expect(treeRows.has(node.position.y)).toBe(false)
   })
 
-  it("bounds joined nodes and edges and draws the runs the read loads", () => {
-    const runIds = Array.from({ length: 150 }, (_, index) => `run-${String(index).padStart(3, "0")}`)
-    const fanOut = createTask({ id: "root", joined_tasks: [...runIds].reverse() })
-    const children = Array.from({ length: 300 }, (_, index) =>
-      createTask({ id: `child-${index}`, parent_id: "root", joined_tasks: ["run-000", "root"] }),
-    )
-    const tasks = [fanOut, ...children]
+  it("draws exactly the runs the read chose, even ones its members don't link to", () => {
+    // 10,001 members: the graph holds the newest 10,000, where the root joins b-000..b-099; the oldest, which
+    // only the read sees, joins a-run. The read's first 100 ids are a-run and b-000..b-098.
+    const bIds = Array.from({ length: MAX_JOINED_RUNS }, (_, index) => `b-${String(index).padStart(3, "0")}`)
+    const tasks = [
+      createTask({ id: "root", joined_tasks: bIds }),
+      ...Array.from({ length: 9999 }, (_, index) => createTask({ id: `member-${index}`, parent_id: "root" })),
+    ]
+    const aRun = createTask({ id: "a-run", workflow_id: "other" })
 
-    const { nodes, edges, hiddenJoinedRuns } = getFlowGraph(tasks, "root")
+    const { nodes, edges, hiddenJoinedRuns } = getFlowGraph(tasks, "root", undefined, {
+      ids: ["a-run", ...bIds.slice(0, -1)],
+      total: MAX_JOINED_RUNS + 1,
+      tasks: [aRun],
+    })
 
     const joinedNodes = nodes.filter((node) => node.type === "joinedTaskNode")
-    expect(joinedNodes.map((node) => (node.data as { taskId: string }).taskId).sort()).toEqual(joinedRunIds(tasks).ids)
-    expect(joinedNodes).toHaveLength(MAX_JOINED_RUNS)
-    expect(edges.filter((edge) => edge.style?.strokeDasharray)).toHaveLength(MAX_JOINED_RUNS)
-    expect(hiddenJoinedRuns).toBe(50)
+    const drawn = joinedNodes.map((node) => (node.data as { taskId: string }).taskId)
+    expect(drawn.sort()).toEqual(["a-run", ...bIds.slice(0, -1)])
+    expect(joinedNodes.find((node) => node.id === "joined:a-run")?.data).toEqual({ taskId: "a-run", task: aRun })
+    expect(edges.some((edge) => edge.target === "joined:b-099")).toBe(false)
+    expect(edges.filter((edge) => edge.style?.strokeDasharray)).toHaveLength(MAX_JOINED_RUNS - 1)
+    expect(hiddenJoinedRuns).toBe(1)
   })
 
   it("bounds dashed edges when many members join the same run", () => {
     const tasks = [
       createTask({ id: "root" }),
       ...Array.from({ length: 300 }, (_, index) =>
-        createTask({ id: `child-${index}`, parent_id: "root", joined_tasks: ["shared"] }),
+        createTask({ id: `child-${index}`, parent_id: "root", joined_tasks: ["shared", "root"] }),
       ),
     ]
 
-    const { nodes, edges, hiddenJoinedRuns, hiddenJoinLinks } = getFlowGraph(tasks, "root")
+    const { nodes, edges, hiddenJoinedRuns, hiddenJoinLinks } = getFlowGraph(tasks, "root", undefined, {
+      ids: ["shared"],
+      total: 1,
+      tasks: [],
+    })
 
     expect(nodes.filter((node) => node.type === "joinedTaskNode")).toHaveLength(1)
     expect(edges.filter((edge) => edge.style?.strokeDasharray)).toHaveLength(MAX_JOINED_RUNS)
     expect(hiddenJoinedRuns).toBe(0)
-    expect(hiddenJoinLinks).toBe(300 - MAX_JOINED_RUNS)
-    expect(hiddenJoinsNote(hiddenJoinedRuns, hiddenJoinLinks)).toBe("200 join links not shown")
+    expect(hiddenJoinLinks).toBe(600 - MAX_JOINED_RUNS)
+    expect(hiddenJoinsNote(hiddenJoinedRuns, hiddenJoinLinks)).toBe("500 join links not shown")
   })
 
   it("notes left-out joined runs and join links together", () => {
@@ -430,7 +457,7 @@ describe("getFlowGraph joined runs", () => {
       createTask({ id: "joined:joined:run-1", parent_id: "root" }),
     ]
 
-    const { nodes, edges } = getFlowGraph(tasks, "root")
+    const { nodes, edges } = getFlowGraph(tasks, "root", undefined, { ids: ["run-1"], total: 1, tasks: [] })
 
     const ids = nodes.map((node) => node.id)
     expect(new Set(ids).size).toBe(ids.length)
@@ -445,7 +472,7 @@ describe("getFlowGraph joined runs", () => {
   })
 
   it("draws nothing extra without joins", () => {
-    const { nodes, edges } = getFlowGraph([createTask({ id: "root" })], "root", undefined, [elsewhere])
+    const { nodes, edges } = getFlowGraph([createTask({ id: "root" })], "root", undefined, NO_JOINED_RUNS)
     expect(nodes).toHaveLength(1)
     expect(edges).toHaveLength(0)
   })

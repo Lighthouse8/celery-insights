@@ -2,7 +2,7 @@ import TaskNode, { JoinedTaskNode } from "@components/workflow/task-node"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@components/ui/tooltip"
 import { useIsDark } from "@hooks/use-is-dark"
 import type { Task } from "@/types/surreal-records"
-import { joinedRunIds, MAX_JOINED_RUNS } from "@lib/joined-runs"
+import { type JoinedRuns, MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
 import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
 import { toSvg } from "html-to-image"
 import React, { useCallback, useEffect, useMemo, useState } from "react"
@@ -69,11 +69,11 @@ export const getFlowGraph = (
   tasks: Task[],
   rootTaskId: string,
   initialPosition?: XYPosition,
-  joinedTasks: Task[] = [],
+  joinedRuns: JoinedRuns = NO_JOINED_RUNS,
 ): {
   nodes: Node[]
   edges: Edge[]
-  /** Joined runs left out of the view by the MAX_JOINED_RUNS bounds. */
+  /** Joined runs the task-workflow read left out by the MAX_JOINED_RUNS bound. */
   hiddenJoinedRuns: number
   /** Dashed edges to drawn nodes left out by the MAX_JOINED_RUNS edge bound. */
   hiddenJoinLinks: number
@@ -118,22 +118,35 @@ export const getFlowGraph = (
     return row
   }
 
-  // Joined runs belong to other workflows: drawn after the tree, never part of it. A view draws at most
-  // MAX_JOINED_RUNS dashed edges, and only the runs the task-workflow read loads (joinedRunIds).
-  let hiddenJoinedRuns = 0
+  // Joined runs belong to other workflows: drawn after the tree, never part of it. The task-workflow read chooses
+  // which (joinedRuns.ids); the graph draws exactly those, with at most MAX_JOINED_RUNS dashed edges.
   let hiddenJoinLinks = 0
   const addJoinedRuns = () => {
-    const { ids, total } = joinedRunIds(tasks)
-    const drawable = new Set(ids)
-    const joinedById = new Map(joinedTasks.map((task) => [task.id, task]))
-    const joinedNodes = new Map<string, Node>()
+    const loaded = new Map(joinedRuns.tasks.map((task) => [task.id, task]))
     const nodeIds = new Set(nodes.map((node) => node.id))
-    // A member's own id may already look like a joined node id ("joined:<id>"); prefix again until it's free.
-    const joinedNodeId = (joinedId: string) => {
+    const joinedNodes = new Map<string, Node>()
+    for (const joinedId of joinedRuns.ids) {
+      if (visited.has(joinedId) || joinedNodes.has(joinedId)) continue
+      // A member's own id may already look like a joined node id ("joined:<id>"); prefix again until it's free.
       let nodeId = JOINED_NODE_PREFIX + joinedId
       while (nodeIds.has(nodeId)) nodeId = JOINED_NODE_PREFIX + nodeId
       nodeIds.add(nodeId)
-      return nodeId
+      joinedNodes.set(joinedId, {
+        id: nodeId,
+        type: "joinedTaskNode",
+        position: { x: 0, y: 0 },
+        // A run that couldn't be loaded (never recorded, deleted, or not readable) stays a placeholder.
+        data: { taskId: joinedId, task: loaded.get(joinedId) },
+        connectable: false,
+        deletable: false,
+      })
+    }
+    // Joined nodes take rows below the tree in the order their first edge reaches them.
+    const placed = new Set<Node>()
+    const place = (joinedNode: Node, x: number) => {
+      if (placed.has(joinedNode)) return
+      joinedNode.position = { x, y: nextLeafRow++ * ROW_HEIGHT }
+      placed.add(joinedNode)
     }
     let edgeBudget = MAX_JOINED_RUNS
     for (const node of nodes) {
@@ -141,34 +154,20 @@ export const getFlowGraph = (
       // A "-replaced" duplicate shares its task; only the task's own node draws the joins.
       if (node.id !== task.id) continue
       for (const joinedId of task.joined_tasks ?? []) {
-        if (!visited.has(joinedId) && !drawable.has(joinedId)) continue
+        const joinedNode = joinedNodes.get(joinedId)
+        if (!joinedNode && !visited.has(joinedId)) continue
         if (!edgeBudget) {
           hiddenJoinLinks++
           continue
         }
         edgeBudget--
-        if (visited.has(joinedId)) {
-          edges.push(createJoinedEdge(task.id, joinedId))
-          continue
-        }
-        let joinedNode = joinedNodes.get(joinedId)
-        if (!joinedNode) {
-          joinedNode = {
-            id: joinedNodeId(joinedId),
-            type: "joinedTaskNode",
-            position: { x: node.position.x + COLUMN_WIDTH, y: nextLeafRow++ * ROW_HEIGHT },
-            // A run that couldn't be loaded (never recorded, deleted, or not readable) stays a placeholder.
-            data: { taskId: joinedId, task: joinedById.get(joinedId) },
-            connectable: false,
-            deletable: false,
-          }
-          joinedNodes.set(joinedId, joinedNode)
-        }
-        edges.push(createJoinedEdge(task.id, joinedNode.id))
+        if (joinedNode) place(joinedNode, node.position.x + COLUMN_WIDTH)
+        edges.push(createJoinedEdge(task.id, joinedNode?.id ?? joinedId))
       }
     }
-    nodes.push(...joinedNodes.values())
-    hiddenJoinedRuns = total - joinedNodes.size
+    // A chosen run with no drawn edge (say, its joiner is older than the members the graph has) still gets a node.
+    for (const joinedNode of joinedNodes.values()) place(joinedNode, nodes[0].position.x + COLUMN_WIDTH)
+    nodes.push(...placed)
   }
 
   const rootTask = taskMap.get(rootTaskId)
@@ -182,17 +181,17 @@ export const getFlowGraph = (
   return {
     nodes: nodes,
     edges: edges,
-    hiddenJoinedRuns,
+    hiddenJoinedRuns: joinedRuns.total - joinedRuns.ids.length,
     hiddenJoinLinks,
   }
 }
 
 /**
  * Node positions and edges depend only on each task's parent, its stored children (which can adopt a
- * parentless child), the runs it joined, and which joined runs loaded, so a progress report or state change can
- * update node data without re-laying out the graph.
+ * parentless child), the runs it joined, and which joined runs the read chose (and how many it left out) and
+ * loaded, so a progress report or state change can update node data without re-laying out the graph.
  */
-export const getLayoutKey = (tasks: Task[], rootTaskId: string, joinedTasks: Task[] = []): string =>
+export const getLayoutKey = (tasks: Task[], rootTaskId: string, joinedRuns: JoinedRuns = NO_JOINED_RUNS): string =>
   [
     rootTaskId,
     // Joined runs keep their reported order: it decides the rows their nodes take.
@@ -202,7 +201,9 @@ export const getLayoutKey = (tasks: Task[], rootTaskId: string, joinedTasks: Tas
           `${task.id}<${task.parent_id ?? ""}>${[...task.children].sort().join(",")}~>${(task.joined_tasks ?? []).join(",")}`,
       )
       .sort(),
-    `joined:${joinedTasks
+    // The chosen ids keep the read's order: it decides which joined node ids and rows they take.
+    `joined:${joinedRuns.ids.join(",")}/${joinedRuns.total}`,
+    `loaded:${joinedRuns.tasks
       .map((task) => task.id)
       .sort()
       .join(",")}`,
@@ -250,14 +251,14 @@ interface FlowChartProps {
   tasks: Task[]
   rootTaskId: string
   currentTaskId?: string
-  joinedTasks?: Task[]
+  joinedRuns?: JoinedRuns
 }
 
 const nodeTypes = {
   taskNode: TaskNode,
   joinedTaskNode: JoinedTaskNode,
 }
-const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId, joinedTasks }) => {
+const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId, joinedRuns }) => {
   const flow = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[])
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[])
@@ -281,10 +282,10 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
 
   const fitView = useCallback(() => flow.fitView({ duration: ZOOM_ANIMATION_SPEED }), [flow])
 
-  const layoutKey = useMemo(() => getLayoutKey(tasks, rootTaskId, joinedTasks), [tasks, rootTaskId, joinedTasks])
+  const layoutKey = useMemo(() => getLayoutKey(tasks, rootTaskId, joinedRuns), [tasks, rootTaskId, joinedRuns])
 
   useEffect(() => {
-    const graph = getFlowGraph(tasks, rootTaskId, undefined, joinedTasks)
+    const graph = getFlowGraph(tasks, rootTaskId, undefined, joinedRuns)
     setNodes(graph.nodes)
     setEdges(graph.edges)
     setJoinsNote(hiddenJoinsNote(graph.hiddenJoinedRuns, graph.hiddenJoinLinks))
@@ -301,7 +302,10 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
   }, [layoutKey, setNodes, setEdges, flow])
 
   // Any other change only refreshes node data, keeping each node where it is.
-  useEffect(() => setNodes((current) => refreshNodeData(current, tasks, joinedTasks)), [tasks, joinedTasks, setNodes])
+  useEffect(
+    () => setNodes((current) => refreshNodeData(current, tasks, joinedRuns?.tasks)),
+    [tasks, joinedRuns, setNodes],
+  )
 
   useEffect(() => {
     if (!currentTaskId) fitView()

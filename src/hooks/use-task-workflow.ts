@@ -1,14 +1,18 @@
 import { queryObservation, isObservationRefresh } from "@lib/observation-query"
 import { useSurrealDB } from "@components/surrealdb-provider"
-import { joinedRunIds, MAX_JOINED_RUNS } from "@lib/joined-runs"
+import { MAX_JOINED_RUNS } from "@lib/joined-runs"
 import { extractId, type SurrealTask, type SurrealWorkflow } from "@/types/surreal-records"
 import type { LiveSubscription, Uuid } from "surrealdb"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 interface TaskWorkflowSnapshot {
   members: SurrealTask[]
-  /** Runs the members joined; they belong to other workflows and are not members. */
+  /** Runs the members joined; they belong to other workflows and are not members. Only the loadable ones. */
   joined: SurrealTask[]
+  /** The joined run ids the read chose (see JoinedRuns), whether or not their records loaded. */
+  joinedIds: string[]
+  /** Every joined run id, before the MAX_JOINED_RUNS cap. */
+  joinedTotal: number
   task: SurrealTask | null
   workflow: SurrealWorkflow | null
 }
@@ -26,6 +30,8 @@ const EMPTY_RESULT: TaskWorkflowSnapshot = {
   workflow: null,
   members: [],
   joined: [],
+  joinedIds: [],
+  joinedTotal: 0,
 }
 
 export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
@@ -52,6 +58,8 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         Array<null | {
           members?: SurrealTask[]
           joined?: SurrealTask[]
+          joinedIds?: string[]
+          joinedTotal?: number
           task?: SurrealTask | null
           workflow?: SurrealWorkflow | null
         }>
@@ -61,12 +69,15 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         `LET $task = (SELECT * FROM type::record('task', $taskId))[0];
                  LET $workflowId = $task.workflow_id ?? $task.root_id ?? $taskId;
                  LET $members = SELECT * FROM task WHERE workflow_id = $workflowId ORDER BY last_updated DESC;
-                 LET $joinedCandidates = array::distinct(array::flatten(SELECT VALUE joined_tasks FROM task WHERE workflow_id = $workflowId AND joined_tasks != NONE));
-                 LET $joinedIds = array::slice(array::sort(array::complement($joinedCandidates, SELECT VALUE record::id(id) FROM task WHERE workflow_id = $workflowId AND record::id(id) IN $joinedCandidates)), 0, ${MAX_JOINED_RUNS});
+                 LET $links = SELECT record::id(id) AS task_id, joined_tasks FROM task WHERE workflow_id = $workflowId;
+                 LET $joinedCandidates = array::sort(array::complement(array::distinct(array::filter(array::flatten($links.joined_tasks), |$id| $id != NONE)), $links.task_id));
+                 LET $joinedIds = array::slice($joinedCandidates, 0, ${MAX_JOINED_RUNS});
                  RETURN {
                     task: $task,
                     workflow: (SELECT * FROM type::record('workflow', $workflowId))[0],
                     members: $members,
+                    joinedIds: $joinedIds,
+                    joinedTotal: array::len($joinedCandidates),
                     joined: array::filter(array::map($joinedIds, |$id| (SELECT * FROM type::record('task', $id))[0]), |$joined| $joined != NONE)
                 };`,
         { taskId },
@@ -79,13 +90,12 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         workflow: result?.workflow ?? null,
         members: Array.isArray(result?.members) ? result.members : [],
         joined: Array.isArray(result?.joined) ? result.joined : [],
+        joinedIds: Array.isArray(result?.joinedIds) ? result.joinedIds : [],
+        joinedTotal: result?.joinedTotal ?? 0,
       }
       workflowIdRef.current = next.task?.workflow_id || next.task?.root_id || next.task?.id?.toString() || taskId
-      // The ids the read asked for, not the records it found: a run that has no row yet must refresh when it gets one.
-      joinedIdsRef.current = new Set(
-        joinedRunIds(next.members.map((member) => ({ id: extractId(member.id), joined_tasks: member.joined_tasks })))
-          .ids,
-      )
+      // The ids the read chose, not the records it found: a run that has no row yet must refresh when it gets one.
+      joinedIdsRef.current = new Set(next.joinedIds)
       setData(next)
       setError(null)
     } catch (err) {

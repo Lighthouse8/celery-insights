@@ -132,11 +132,23 @@ const RelatedTasksPanel = ({ currentTask, members }: { currentTask: Task; member
 
 const TaskPage = () => {
   const { taskId } = Route.useParams()
-  const { task: surrealTask, workflow: surrealWorkflow, members, joined, isLoading, error } = useTaskWorkflow(taskId)
+  const {
+    task: surrealTask,
+    workflow: surrealWorkflow,
+    members,
+    joined,
+    joinedIds,
+    joinedTotal,
+    isLoading,
+    error,
+  } = useTaskWorkflow(taskId)
   const task = useMemo(() => (surrealTask ? parseTask(surrealTask) : undefined), [surrealTask])
   const workflow = useMemo(() => (surrealWorkflow ? parseWorkflow(surrealWorkflow) : undefined), [surrealWorkflow])
   const parsedMembers = useMemo(() => members.map(parseTask), [members])
-  const joinedTasks = useMemo(() => joined.map(parseTask), [joined])
+  const joinedRuns = useMemo(
+    () => ({ ids: joinedIds, total: joinedTotal, tasks: joined.map(parseTask) }),
+    [joined, joinedIds, joinedTotal],
+  )
   const [chartType, setChartType] = React.useState<WorkflowChartType>(WorkflowChartType.FLOWCHART)
   useTourChangeStepOnLoad(2, task !== undefined)
 
@@ -172,7 +184,7 @@ const TaskPage = () => {
               workflowId={task.workflow_id || task.root_id || task.id}
               rootTaskId={workflow?.root_task_id || task.root_id || task.id}
               currentTaskId={task.id}
-              joinedTasks={joinedTasks}
+              joinedRuns={joinedRuns}
             />
           ) : (
             <Skeleton className="h-[450px] w-full" />
