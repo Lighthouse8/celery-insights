@@ -82,19 +82,6 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
           }
         />
         <SettingRow
-          title="Task progress"
-          experimental
-          description="Show the progress tasks report with task-progress events, in a Progress box on the task page and as a bar under running tasks in the workflow graph."
-          helper={showTaskProgress ? "Currently shown" : "Currently hidden"}
-          control={
-            <Switch
-              aria-label="Show task progress"
-              checked={showTaskProgress}
-              onCheckedChange={(checked) => useSettingsStore.setState({ showTaskProgress: checked })}
-            />
-          }
-        />
-        <SettingRow
           title="Live events limit"
           description="Choose how many events the Live Events page shows at once."
           helper={`Currently set to ${rawEventsLimit.toLocaleString()} events`}
@@ -145,6 +132,19 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
             <Button variant="outline" size="sm" onClick={() => startTour()}>
               Start tour
             </Button>
+          }
+        />
+        <SettingRow
+          title="Task progress"
+          experimental
+          description="Show the progress tasks report with task-progress events, in a Progress box on the task page and as a bar under running tasks in the workflow graph."
+          helper={showTaskProgress ? "Currently shown" : "Currently hidden"}
+          control={
+            <Switch
+              aria-label="Show task progress"
+              checked={showTaskProgress}
+              onCheckedChange={(checked) => useSettingsStore.setState({ showTaskProgress: checked })}
+            />
           }
         />
       </div>
