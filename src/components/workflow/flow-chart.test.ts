@@ -399,7 +399,7 @@ describe("getFlowGraph joined runs", () => {
       id: "metrics",
       workflow_id: "nightly",
       parent_id: "hierarchy",
-      joined_tasks: ["nested", "root", "gone"],
+      joined_tasks: ["nested", "root", "gone", "cut-run"],
     })
     const nested = createTask({ id: "nested", workflow_id: "nested", children: ["nested-child"] })
     const nestedChild = createTask({ id: "nested-child", workflow_id: "nested", parent_id: "nested" })
@@ -407,7 +407,8 @@ describe("getFlowGraph joined runs", () => {
       ids: ["resource"],
       total: 1,
       tasks: [resource, hierarchy, finalize, fail, metrics, nested, nestedChild],
-      walked: [],
+      // "gone" was walked but has no record; "cut-run" was never walked (cut by the bounds).
+      walked: ["resource", "hierarchy", "finalize", "fail", "metrics", "nested", "nested-child", "gone"],
       cut: 0,
     }
     const graph = getFlowGraph([member, memberChild], "root", undefined, expanded)
@@ -443,8 +444,9 @@ describe("getFlowGraph joined runs", () => {
       expect(node("joined:nested")).toMatchObject({ type: "joinedRunNode", data: nested })
       expect(node("joined:nested-child")).toMatchObject({ type: "taskNode", data: nestedChild })
       expect(solid).toContainEqual(["joined:nested", "joined:nested-child"])
-      // A run the read couldn't load stays a placeholder.
+      // A run the walk reached but couldn't load stays a placeholder; one it never reached isn't drawn.
       expect(node("joined:gone")).toMatchObject({ type: "joinedTaskNode", data: { taskId: "gone" } })
+      expect(node("joined:cut-run")).toBeUndefined()
     })
 
     it("leaves the workflow members where they were", () => {

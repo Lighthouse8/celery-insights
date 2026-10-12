@@ -127,6 +127,7 @@ export const getFlowGraph = (
   const addJoinedRuns = () => {
     const expanded = new Map(joinedRuns.tasks.map((task) => [task.id, task]))
     const expandedChildMap = getChildMap(joinedRuns.tasks)
+    const walked = new Set([...joinedRuns.ids, ...joinedRuns.walked])
     const nodeIds = new Set(nodes.map((node) => node.id))
     const joinedNodeIds = new Map<string, string>()
     // A member's own id may already look like a joined node id ("joined:<id>"); prefix again until it's free.
@@ -198,7 +199,8 @@ export const getFlowGraph = (
           }
         : { ...createNode(task, column, 0, nodeId), type: isRoot ? "joinedRunNode" : "taskNode" }
       nodes.push(node)
-      if (task) drawJoins(task, nodeId, column, () => true)
+      // A join the walk never reached was cut by its bounds and is counted in the note, not drawn.
+      if (task) drawJoins(task, nodeId, column, (joinedId) => visited.has(joinedId) || walked.has(joinedId))
       // Like the workflow tree: children by parent_id, plus listed children whose parent wasn't expanded.
       const children = !task
         ? []
