@@ -1,10 +1,14 @@
 import TaskNode from "@components/workflow/task-node"
+import { Checkbox } from "@components/ui/checkbox"
+import { Popover, PopoverContent, PopoverTrigger } from "@components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@components/ui/tooltip"
 import { useIsDark } from "@hooks/use-is-dark"
+import { useTaskNodeFields } from "@hooks/use-task-node-fields"
+import useSettingsStore from "@stores/use-settings-store"
 import type { Task } from "@/types/surreal-records"
-import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
+import { Camera, Focus, Maximize2, Move, Navigation, Tags } from "lucide-react"
 import { toSvg } from "html-to-image"
-import React, { useCallback, useEffect, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Background,
   ControlButton,
@@ -21,13 +25,22 @@ import {
   type XYPosition,
 } from "@xyflow/react"
 
-const COLUMN_WIDTH = 180
-const ROW_HEIGHT = 100
+export interface FlowGrid {
+  columnWidth: number
+  rowHeight: number
+}
 
-const createNode = (task: Task, x: number, y: number, nodeId?: string): Node => ({
+const DEFAULT_GRID: FlowGrid = { columnWidth: 180, rowHeight: 100 }
+const LABEL_LINE_HEIGHT = 14
+
+/** Task node labels hang under the avatar: columns widen to fit them, and rows grow by a line per field. */
+export const flowGrid = (labelLines: number): FlowGrid =>
+  labelLines ? { columnWidth: 260, rowHeight: DEFAULT_GRID.rowHeight + labelLines * LABEL_LINE_HEIGHT } : DEFAULT_GRID
+
+const createNode = (task: Task, x: number, y: number, grid: FlowGrid, nodeId?: string): Node => ({
   id: nodeId || task.id,
   type: "taskNode",
-  position: { x: x * COLUMN_WIDTH, y: y * ROW_HEIGHT },
+  position: { x: x * grid.columnWidth, y: y * grid.rowHeight },
   data: task as Task & Record<string, unknown>,
   connectable: false,
   deletable: false,
@@ -59,6 +72,7 @@ export const getFlowGraph = (
   tasks: Task[],
   rootTaskId: string,
   initialPosition?: XYPosition,
+  grid: FlowGrid = DEFAULT_GRID,
 ): {
   nodes: Node[]
   edges: Edge[]
@@ -74,7 +88,7 @@ export const getFlowGraph = (
 
   const visitTask = (task: Task, column: number): number => {
     visited.add(task.id)
-    const node = createNode(task, column, 0)
+    const node = createNode(task, column, 0, grid)
     nodes.push(node)
 
     const children = [...(childMap.get(task.id) || [])]
@@ -91,7 +105,7 @@ export const getFlowGraph = (
         if (visited.has(child.id)) {
           const replacedId = child.id + "-replaced"
           const row = nextLeafRow++
-          nodes.push(createNode(child, column + 1, row, replacedId))
+          nodes.push(createNode(child, column + 1, row, grid, replacedId))
           edges.push(createEdge(task.id, replacedId))
           return row
         }
@@ -99,14 +113,14 @@ export const getFlowGraph = (
         return visitTask(child, column + 1)
       })
     const row = childRows.length ? (childRows[0] + childRows[childRows.length - 1]) / 2 : nextLeafRow++
-    node.position.y = row * ROW_HEIGHT
+    node.position.y = row * grid.rowHeight
     return row
   }
 
   const rootTask = taskMap.get(rootTaskId)
   if (rootTask) {
     const rootRow = visitTask(rootTask, initialPosition?.x ?? 0)
-    const offset = ((initialPosition?.y ?? 0) - rootRow) * ROW_HEIGHT
+    const offset = ((initialPosition?.y ?? 0) - rootRow) * grid.rowHeight
     for (const node of nodes) node.position.y += offset
   }
 
@@ -146,6 +160,10 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
   const [locked, setLocked] = useState<boolean>(true)
   const [isInitialized, setInitialized] = useState<boolean>(false)
   const isDark = useIsDark()
+  const { fields, visible } = useTaskNodeFields()
+  const labelsEnabled = useSettingsStore((state) => state.taskNodeLabels)
+  const hiddenFields = useSettingsStore((state) => state.hiddenTaskNodeFields)
+  const grid = useMemo(() => flowGrid(visible.length), [visible.length])
 
   const focusNode = useCallback(
     (nodeId: string) => {
@@ -163,7 +181,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
   const fitView = useCallback(() => flow.fitView({ duration: ZOOM_ANIMATION_SPEED }), [flow])
 
   useEffect(() => {
-    const graph = getFlowGraph(tasks, rootTaskId)
+    const graph = getFlowGraph(tasks, rootTaskId, undefined, grid)
     setNodes(graph.nodes)
     setEdges(graph.edges)
     if (!isInitialized && currentTaskId) {
@@ -176,7 +194,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
     }
     setInitialized(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks, rootTaskId, setNodes, setEdges, flow])
+  }, [tasks, rootTaskId, grid, setNodes, setEdges, flow])
 
   useEffect(() => {
     if (!currentTaskId) fitView()
@@ -246,6 +264,41 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
             <TooltipContent side="right">Focus current task</TooltipContent>
           </Tooltip>
         </ControlButton>
+        {labelsEnabled && (
+          <Popover>
+            <Tooltip>
+              <PopoverTrigger asChild>
+                <TooltipTrigger asChild>
+                  <ControlButton aria-label="Task labels">
+                    <Tags className="size-3" />
+                  </ControlButton>
+                </TooltipTrigger>
+              </PopoverTrigger>
+              <TooltipContent side="right">Task labels</TooltipContent>
+            </Tooltip>
+            <PopoverContent side="right" align="end" className="w-56 space-y-2 p-3">
+              {fields.length ? (
+                fields.map((field) => (
+                  <label key={field.path} className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={!hiddenFields.includes(field.path)}
+                      onCheckedChange={(checked) =>
+                        useSettingsStore.setState({
+                          hiddenTaskNodeFields: checked
+                            ? hiddenFields.filter((path) => path !== field.path)
+                            : [...hiddenFields, field.path],
+                        })
+                      }
+                    />
+                    <span className="truncate font-mono text-xs">{field.path}</span>
+                  </label>
+                ))
+              ) : (
+                <p className="text-sm text-muted-foreground">No task node fields configured.</p>
+              )}
+            </PopoverContent>
+          </Popover>
+        )}
         <ControlButton onClick={() => handleDownloadImage()}>
           <Tooltip>
             <TooltipTrigger asChild>

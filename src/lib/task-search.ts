@@ -195,7 +195,7 @@ const parseContainer = (text: string, start: number, depth: number): Literal | u
 }
 
 // Accepts JSON and Python repr literals. Numbers keep their source text, so 64-bit ids and float formatting survive.
-const parseLiteral = (text: string, start: number, depth = 0): Literal | undefined => {
+export const parseLiteral = (text: string, start: number, depth = 0): Literal | undefined => {
   const index = skipSpace(text, start)
   const character = text[index]
   if (character === "[" || character === "{") return parseContainer(text, index, depth + 1)

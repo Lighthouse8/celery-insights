@@ -1,5 +1,5 @@
 import { createTask } from "@test-fixtures"
-import { getFlowGraph } from "./flow-chart"
+import { flowGrid, getFlowGraph } from "./flow-chart"
 
 describe("getFlowGraph", () => {
   it("keeps nested channel and resource branches in separate rows", () => {
@@ -44,6 +44,27 @@ describe("getFlowGraph", () => {
     expect(edges.filter((edge) => edge.target === "meta-finalize")).toMatchObject([
       { source: "meta-hierarchy-1", target: "meta-finalize" },
     ])
+  })
+
+  it("spaces rows and columns for task node labels", () => {
+    const tasks = [
+      createTask({ id: "root" }),
+      createTask({ id: "child-a", parent_id: "root" }),
+      createTask({ id: "child-b", parent_id: "root" }),
+    ]
+    const position = (nodes: { id: string; position: { x: number; y: number } }[], id: string) =>
+      nodes.find((node) => node.id === id)!.position
+
+    const compact = getFlowGraph(tasks, "root").nodes
+    expect(flowGrid(0)).toEqual({ columnWidth: 180, rowHeight: 100 })
+    expect(position(compact, "child-a").x).toBe(180)
+    expect(position(compact, "child-b").y - position(compact, "child-a").y).toBe(100)
+
+    const grid = flowGrid(4)
+    const labelled = getFlowGraph(tasks, "root", undefined, grid).nodes
+    expect(position(labelled, "child-a").x).toBe(grid.columnWidth)
+    expect(position(labelled, "child-b").y - position(labelled, "child-a").y).toBe(grid.rowHeight)
+    expect(grid.rowHeight).toBeGreaterThanOrEqual(100 + 4 * 14)
   })
 
   it("centers a parent between child subtrees of different sizes", () => {

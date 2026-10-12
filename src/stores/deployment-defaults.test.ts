@@ -26,6 +26,18 @@ describe("deployment defaults", () => {
     expect(useSettingsStore.getState().rawEventsLimit).toBe(500)
   })
 
+  it("applies a deployment default to a setting the browser saved before it existed", () => {
+    useSettingsStore.setState({ theme: PreferredTheme.LIGHT, taskNodeLabels: false })
+    // Saved by a version without the task node settings.
+    localStorage.setItem("settings", JSON.stringify({ state: { theme: PreferredTheme.LIGHT }, version: 0 }))
+    applyDeploymentDefaults({ theme: "dark", taskNodeLabels: true, taskNodeFields: "type,kwargs.channel" })
+    expect(useSettingsStore.getState()).toMatchObject({
+      theme: PreferredTheme.LIGHT,
+      taskNodeLabels: true,
+      taskNodeFields: "type,kwargs.channel",
+    })
+  })
+
   it("disables a saved demo preference and does not reenable it on reset", () => {
     useSettingsStore.setState({ demo: true })
     applyDeploymentDefaults({ demoAvailable: false })

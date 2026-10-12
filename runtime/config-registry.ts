@@ -160,6 +160,18 @@ export const SETTINGS: readonly Setting[] = [
   { path: "ui.defaults.hide_welcome_banner", key: "uiHideWelcomeBanner", type: "boolean" },
   { path: "ui.defaults.raw_events_limit", key: "uiRawEventsLimit", type: "number" },
   {
+    path: "ui.defaults.task_node_labels",
+    key: "uiTaskNodeLabels",
+    type: "boolean",
+    env: "CELERY_INSIGHTS_UI_TASK_NODE_LABELS",
+  },
+  {
+    path: "ui.defaults.task_node_fields",
+    key: "uiTaskNodeFields",
+    type: "string",
+    env: "CELERY_INSIGHTS_UI_TASK_NODE_FIELDS",
+  },
+  {
     path: "authentication.session.secret",
     key: "authSessionSecret",
     type: "string",
