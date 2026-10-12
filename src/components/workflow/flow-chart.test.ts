@@ -320,6 +320,27 @@ describe("getFlowGraph joined runs", () => {
     expect(hiddenJoinedRuns).toBe(0)
   })
 
+  it("gives joined nodes ids no member node has", () => {
+    const tasks = [
+      createTask({ id: "root", joined_tasks: ["run-1", "joined:run-1"] }),
+      createTask({ id: "joined:run-1", parent_id: "root" }),
+      createTask({ id: "joined:joined:run-1", parent_id: "root" }),
+    ]
+
+    const { nodes, edges } = getFlowGraph(tasks, "root")
+
+    const ids = nodes.map((node) => node.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    const runNode = nodes.find((node) => node.type === "joinedTaskNode")
+    expect(runNode?.data).toEqual({ taskId: "run-1", task: undefined })
+    expect(ids).toContain("joined:joined:joined:run-1")
+    const dashed = edges.filter((edge) => edge.style?.strokeDasharray).map((edge) => [edge.source, edge.target])
+    expect(dashed).toEqual([
+      ["root", runNode?.id],
+      ["root", "joined:run-1"],
+    ])
+  })
+
   it("draws nothing extra without joins", () => {
     const { nodes, edges } = getFlowGraph([createTask({ id: "root" })], "root", undefined, [elsewhere])
     expect(nodes).toHaveLength(1)

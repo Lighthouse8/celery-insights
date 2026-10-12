@@ -124,6 +124,14 @@ export const getFlowGraph = (
     const drawable = new Set(ids)
     const joinedById = new Map(joinedTasks.map((task) => [task.id, task]))
     const joinedNodes = new Map<string, Node>()
+    const nodeIds = new Set(nodes.map((node) => node.id))
+    // A member's own id may already look like a joined node id ("joined:<id>"); prefix again until it's free.
+    const joinedNodeId = (joinedId: string) => {
+      let nodeId = JOINED_NODE_PREFIX + joinedId
+      while (nodeIds.has(nodeId)) nodeId = JOINED_NODE_PREFIX + nodeId
+      nodeIds.add(nodeId)
+      return nodeId
+    }
     let edgeBudget = MAX_JOINED_RUNS
     for (const node of nodes) {
       const task = node.data as unknown as Task
@@ -140,7 +148,7 @@ export const getFlowGraph = (
         let joinedNode = joinedNodes.get(joinedId)
         if (!joinedNode) {
           joinedNode = {
-            id: JOINED_NODE_PREFIX + joinedId,
+            id: joinedNodeId(joinedId),
             type: "joinedTaskNode",
             position: { x: node.position.x + COLUMN_WIDTH, y: nextLeafRow++ * ROW_HEIGHT },
             // A run that couldn't be loaded (never recorded, deleted, or not readable) stays a placeholder.
