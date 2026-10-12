@@ -59,4 +59,16 @@ describe("TaskExecutionPanel", () => {
     render(<TaskExecutionPanel task={startedTask({ progress })} />)
     expect(screen.getByText("Progress:")).not.toHaveAttribute("data-slot")
   })
+
+  it("marks the progress description as restricted without result access", () => {
+    const progress = { current: 3, total: 10, updated_at: now }
+    const { unmount } = render(
+      <TaskExecutionPanel task={startedTask({ progress, restricted_fields: ["task.result.read"] })} />,
+    )
+    expect(screen.getByText("Description restricted")).toBeInTheDocument()
+    unmount()
+
+    render(<TaskExecutionPanel task={startedTask({ progress, restricted_fields: ["task.input.read"] })} />)
+    expect(screen.queryByText("Description restricted")).toBeNull()
+  })
 })

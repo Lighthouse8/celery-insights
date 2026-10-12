@@ -1,4 +1,5 @@
 import { Progress } from "@components/ui/progress"
+import { LockKeyhole } from "lucide-react"
 import { TaskState, type Task, type TaskProgress as TaskProgressRecord } from "@/types/surreal-records"
 import React from "react"
 
@@ -13,7 +14,10 @@ export const runningProgressPercent = (task: Task): number | undefined =>
 
 const formatCount = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 2 })
 
-const TaskProgress: React.FC<{ progress: TaskProgressRecord }> = ({ progress }) => {
+const TaskProgress: React.FC<{ progress: TaskProgressRecord; descriptionRestricted?: boolean }> = ({
+  progress,
+  descriptionRestricted = false,
+}) => {
   const count = progress.total
     ? `${formatCount(progress.current)}/${formatCount(progress.total)}`
     : formatCount(progress.current)
@@ -29,6 +33,13 @@ const TaskProgress: React.FC<{ progress: TaskProgressRecord }> = ({ progress }) 
       ) : null}
       <span className="shrink-0 text-sm text-muted-foreground tabular-nums">{count}</span>
       {progress.description && <span className="truncate text-muted-foreground">{progress.description}</span>}
+      {descriptionRestricted && !progress.description && (
+        // The description is task-written text, so it follows result access; say it was hidden.
+        <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+          <LockKeyhole className="size-3" aria-hidden="true" />
+          Description restricted
+        </span>
+      )}
     </div>
   )
 }

@@ -56,7 +56,12 @@ const TaskExecutionPanel: React.FC<{ task: Task }> = ({ task }) => {
           <div className="md:col-span-2">
             <DetailItem
               label={progressLabel(task.state)}
-              value={<TaskProgress progress={task.progress} />}
+              value={
+                <TaskProgress
+                  progress={task.progress}
+                  descriptionRestricted={task.restricted_fields?.includes("task.result.read")}
+                />
+              }
               description={task.progress.updated_at && `Last reported ${task.progress.updated_at.toLocaleString()}`}
             />
           </div>
