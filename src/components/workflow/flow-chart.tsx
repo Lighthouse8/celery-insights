@@ -1,4 +1,4 @@
-import TaskNode, { JoinedTaskNode } from "@components/workflow/task-node"
+import TaskNode, { JoinedRunNode, JoinedTaskNode } from "@components/workflow/task-node"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@components/ui/tooltip"
 import { useIsDark } from "@hooks/use-is-dark"
 import type { Task } from "@/types/surreal-records"
@@ -181,23 +181,22 @@ export const getFlowGraph = (
         queue.push({ taskId, column: (nodes[0]?.position.x ?? 0) / COLUMN_WIDTH + 1 })
       }
 
-    // The joined run's root keeps the joined-run look; its descendants are ordinary task nodes.
+    // Every loaded task is an ordinary task node; a joined run's root gets the joined-run look on top.
     const visitExpanded = (taskId: string, column: number, isRoot: boolean): number => {
       placed.add(taskId)
       const task = expanded.get(taskId)
       const nodeId = joinedNodeId(taskId)
-      const node: Node =
-        isRoot || !task
-          ? {
-              id: nodeId,
-              type: "joinedTaskNode",
-              position: { x: column * COLUMN_WIDTH, y: 0 },
-              // A run that couldn't be loaded (never recorded, deleted, or not readable) stays a placeholder.
-              data: { taskId, task },
-              connectable: false,
-              deletable: false,
-            }
-          : createNode(task, column, 0, nodeId)
+      const node: Node = !task
+        ? {
+            id: nodeId,
+            type: "joinedTaskNode",
+            position: { x: column * COLUMN_WIDTH, y: 0 },
+            // A run that couldn't be loaded (never recorded, deleted, or not readable) stays a placeholder.
+            data: { taskId },
+            connectable: false,
+            deletable: false,
+          }
+        : { ...createNode(task, column, 0, nodeId), type: isRoot ? "joinedRunNode" : "taskNode" }
       nodes.push(node)
       if (task) drawJoins(task, nodeId, column, () => true)
       // Like the workflow tree: children by parent_id, plus listed children whose parent wasn't expanded.
@@ -270,11 +269,8 @@ export const refreshNodeData = (nodes: Node[], tasks: Task[], joinedTasks: Task[
   const tasksById = new Map(tasks.map((task) => [task.id, task]))
   const joinedById = new Map(joinedTasks.map((task) => [task.id, task]))
   return nodes.map((node) => {
-    if (node.type === "joinedTaskNode") {
-      const data = node.data as { taskId: string; task?: Task }
-      const task = joinedById.get(data.taskId)
-      return task && task !== data.task ? { ...node, data: { ...data, task } } : node
-    }
+    // A placeholder is a run the read couldn't load; once it loads, the layout key changes and the graph is redrawn.
+    if (node.type === "joinedTaskNode") return node
     // Duplicated nodes get a "-replaced" id and expanded joined-run tasks a "joined:" id; both keep their task in data.
     const taskId = (node.data as unknown as Task).id
     const task = tasksById.get(taskId) ?? joinedById.get(taskId)
@@ -316,6 +312,7 @@ interface FlowChartProps {
 
 const nodeTypes = {
   taskNode: TaskNode,
+  joinedRunNode: JoinedRunNode,
   joinedTaskNode: JoinedTaskNode,
 }
 const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId, joinedRuns }) => {
