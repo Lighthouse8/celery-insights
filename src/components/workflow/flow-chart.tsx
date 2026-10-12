@@ -8,7 +8,7 @@ import useSettingsStore from "@stores/use-settings-store"
 import type { Task } from "@/types/surreal-records"
 import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
 import { toSvg } from "html-to-image"
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
 import {
   Background,
   ControlButton,
@@ -17,13 +17,17 @@ import {
   getNodesBounds,
   getViewportForBounds,
   MiniMap,
+  MiniMapNode,
+  type MiniMapNodeProps,
   type Node,
   ReactFlow,
+  type ReactFlowState,
   type Rect,
   useEdgesState,
   useNodesInitialized,
   useNodesState,
   useReactFlow,
+  useStore,
   type XYPosition,
 } from "@xyflow/react"
 
@@ -50,13 +54,58 @@ export const flowGrid = (labelLines: number): FlowGrid =>
  */
 export const labelledBounds = (bounds: Rect, labelLines: number): Rect => {
   if (!labelLines) return bounds
-  const overhang = (TASK_NODE_LABEL_WIDTH - AVATAR_SIZE) / 2
-  return {
-    x: bounds.x - overhang,
-    y: bounds.y,
-    width: bounds.width + 2 * overhang,
-    height: bounds.height + TASK_NODE_LABEL_GAP + labelLines * TASK_NODE_LABEL_LINE_HEIGHT,
+  const { side, below } = labelOverhang(labelLines)
+  return { x: bounds.x - side, y: bounds.y, width: bounds.width + 2 * side, height: bounds.height + below }
+}
+
+const labelOverhang = (labelLines: number) => ({
+  side: (TASK_NODE_LABEL_WIDTH - AVATAR_SIZE) / 2,
+  below: TASK_NODE_LABEL_GAP + labelLines * TASK_NODE_LABEL_LINE_HEIGHT,
+})
+
+const MINIMAP_WIDTH = 200
+const MINIMAP_HEIGHT = 100
+const MINIMAP_OFFSET_SCALE = 5
+
+/** Flow units per MiniMap pixel, worked out the way React Flow's MiniMap does from the nodes and the viewport. */
+const miniMapViewScale = (state: ReactFlowState): number => {
+  const [tx, ty, zoom] = state.transform
+  const view = { x: -tx / zoom, y: -ty / zoom, x2: (state.width - tx) / zoom, y2: (state.height - ty) / zoom }
+  if (state.nodes.length) {
+    const nodes = getNodesBounds(state.nodes, { nodeLookup: state.nodeLookup })
+    view.x = Math.min(view.x, nodes.x)
+    view.y = Math.min(view.y, nodes.y)
+    view.x2 = Math.max(view.x2, nodes.x + nodes.width)
+    view.y2 = Math.max(view.y2, nodes.y + nodes.height)
   }
+  return Math.max((view.x2 - view.x) / MINIMAP_WIDTH, (view.y2 - view.y) / MINIMAP_HEIGHT)
+}
+
+const TaskMiniMapNode = (props: MiniMapNodeProps) => {
+  const labelLines = useContext(TaskNodeFieldsContext).length
+  return <MiniMapNode {...props} {...labelledBounds(props, labelLines)} />
+}
+
+/**
+ * The MiniMap frames nodes by their measured avatars and offers no way to widen that frame, only a uniform margin
+ * in MiniMap pixels. Grow that margin by the label overhang so the labelled rectangles stay inside it.
+ */
+const TaskMiniMap = ({ bgColor, maskColor }: { bgColor: string; maskColor: string }) => {
+  const labelLines = useContext(TaskNodeFieldsContext).length
+  const viewScale = useStore(miniMapViewScale)
+  const { side, below } = labelOverhang(labelLines)
+  return (
+    <MiniMap
+      position="top-right"
+      style={{ backgroundColor: bgColor, height: MINIMAP_HEIGHT, width: MINIMAP_WIDTH }}
+      maskColor={maskColor}
+      nodeComponent={TaskMiniMapNode}
+      offsetScale={
+        labelLines && viewScale ? MINIMAP_OFFSET_SCALE + Math.max(side, below) / viewScale : MINIMAP_OFFSET_SCALE
+      }
+      pannable
+    />
+  )
 }
 
 /** Moves laid-out (or dragged) nodes onto a new grid, keeping each one's place relative to the others. */
@@ -331,12 +380,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
             </Tooltip>
           </ControlButton>
         </Controls>
-        <MiniMap
-          position="top-right"
-          style={{ backgroundColor: bgColor, height: 100, width: 200 }}
-          maskColor={hoverColor}
-          pannable
-        />
+        <TaskMiniMap bgColor={bgColor} maskColor={hoverColor} />
       </ReactFlow>
     </TaskNodeFieldsContext.Provider>
   )
