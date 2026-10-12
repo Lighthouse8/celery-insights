@@ -13,15 +13,15 @@ describe("TaskProgress", () => {
     expect(document.querySelector("[data-slot=progress]")).not.toBeNull()
   })
 
-  it("says the description is restricted when result access is denied", () => {
+  it("says the description is unavailable when result access is denied", () => {
     render(<TaskProgress progress={{ current: 3, total: 10, updated_at }} descriptionRestricted />)
     expect(screen.getByText("3/10")).toBeInTheDocument()
-    expect(screen.getByText("Description restricted")).toBeInTheDocument()
+    expect(screen.getByText("Description not available to you")).toBeInTheDocument()
   })
 
-  it("shows no restriction marker for a task that never sent a description", () => {
+  it("shows no marker when result access is allowed and the task sent no description", () => {
     render(<TaskProgress progress={{ current: 3, total: 10, updated_at }} />)
-    expect(screen.queryByText("Description restricted")).toBeNull()
+    expect(screen.queryByText("Description not available to you")).toBeNull()
   })
 
   it("keeps the real count when a task overshoots its total", () => {

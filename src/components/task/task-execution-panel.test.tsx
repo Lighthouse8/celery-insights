@@ -65,10 +65,10 @@ describe("TaskExecutionPanel", () => {
     const { unmount } = render(
       <TaskExecutionPanel task={startedTask({ progress, restricted_fields: ["task.result.read"] })} />,
     )
-    expect(screen.getByText("Description restricted")).toBeInTheDocument()
+    expect(screen.getByText("Description not available to you")).toBeInTheDocument()
     unmount()
 
     render(<TaskExecutionPanel task={startedTask({ progress, restricted_fields: ["task.input.read"] })} />)
-    expect(screen.queryByText("Description restricted")).toBeNull()
+    expect(screen.queryByText("Description not available to you")).toBeNull()
   })
 })

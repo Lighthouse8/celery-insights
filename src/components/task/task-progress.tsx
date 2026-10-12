@@ -34,10 +34,11 @@ const TaskProgress: React.FC<{ progress: TaskProgressRecord; descriptionRestrict
       <span className="shrink-0 text-sm text-muted-foreground tabular-nums">{count}</span>
       {progress.description && <span className="truncate text-muted-foreground">{progress.description}</span>}
       {descriptionRestricted && !progress.description && (
-        // The description is task-written text, so it follows result access; say it was hidden.
+        // The description is task-written text, so it follows result access. The marker shows whether or not
+        // the task sent one, so it can't reveal that a hidden description exists.
         <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
           <LockKeyhole className="size-3" aria-hidden="true" />
-          Description restricted
+          Description not available to you
         </span>
       )}
     </div>
