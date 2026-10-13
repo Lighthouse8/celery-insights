@@ -18,9 +18,9 @@ export const MAX_LINKING_MEMBERS = 10000
 
 /**
  * The joined runs the task-workflow read chose for a workflow: `ids` (first MAX_JOINED_RUNS non-member ids in id
- * order, loadable or not), `total` (all of them, before the cap), `tasks` (the records it loaded: those runs and
- * their expanded descendants, including runs those joined), `walked`, and `cut` (links it left unexpanded by its
- * bounds).
+ * order, loadable or not), `total` (all of them among the ids it checked, before the cap), `tasks` (the records it
+ * loaded: those runs and their expanded descendants, including runs those joined), `walked`, and `cut` (links it left
+ * unexpanded by its bounds).
  */
 export interface JoinedRuns {
   ids: string[]
@@ -31,6 +31,8 @@ export interface JoinedRuns {
   cut: number
   /** The read hit MAX_LINKING_MEMBERS: joins from members past those it read are missing. */
   membersCut?: boolean
+  /** More than MAX_EXPANDED_TASKS ids were joined: those past them weren't checked for members, so aren't in `total`. */
+  joinsUnchecked?: boolean
 }
 
 export const NO_JOINED_RUNS: JoinedRuns = { ids: [], total: 0, tasks: [], walked: [], cut: 0 }
@@ -69,9 +71,12 @@ export const joinedRunsQuery = (linkingMembers = MAX_LINKING_MEMBERS): { stateme
     `LET $linkRows = SELECT record::id(id) AS task_id,joined_tasks FROM task WHERE joined_workflow_id = $workflowId LIMIT ${linkingMembers + 1} TIMEOUT 2s`,
     `LET $links = array::slice($linkRows,0,${linkingMembers})`,
     "LET $linked = array::sort(array::complement(array::distinct(array::filter(array::flatten($links.joined_tasks),|$id| $id != NONE)),$links.task_id))",
-    // Members that joined nothing aren't in the links; a joined id is checked by point read instead.
-    `LET $memberJoins = array::filter(array::slice($linked,0,${MAX_EXPANDED_TASKS}),|$id| (SELECT VALUE workflow_id FROM type::record('task',$id) TIMEOUT 2s)[0] = $workflowId)`,
-    "LET $joinedCandidates = array::complement($linked,$memberJoins)",
+    // Members that joined nothing aren't in the links; a joined id is checked by point read instead, for the first
+    // MAX_EXPANDED_TASKS only. Unchecked ids aren't candidates (a member among them would take a run's slot), and the
+    // read flags them (`joinsUnchecked`).
+    `LET $checked = array::slice($linked,0,${MAX_EXPANDED_TASKS})`,
+    "LET $memberJoins = array::filter($checked,|$id| (SELECT VALUE workflow_id FROM type::record('task',$id) TIMEOUT 2s)[0] = $workflowId)",
+    "LET $joinedCandidates = array::complement($checked,$memberJoins)",
     "LET $skip = array::concat($links.task_id,$memberJoins)",
     `LET $seen0 = array::slice($joinedCandidates,0,${MAX_JOINED_RUNS})`,
     `LET $found0 = ${lookup("$seen0")}`,
@@ -106,6 +111,6 @@ export const joinedRunsQuery = (linkingMembers = MAX_LINKING_MEMBERS): { stateme
   const found = Array.from({ length: last + 1 }, (_, level) => `$found${level}`).join(",")
   return {
     statements,
-    fields: `joinedIds:$seen0,walkedIds:array::distinct($seen${last}),joinedTotal:array::len($joinedCandidates),expanded:array::concat(${found}),expansionCut:array::len(array::distinct(array::concat(${cut.join(",")},$beyond))),membersCut:array::len($linkRows) > ${linkingMembers}`,
+    fields: `joinedIds:$seen0,walkedIds:array::distinct($seen${last}),joinedTotal:array::len($joinedCandidates),expanded:array::concat(${found}),expansionCut:array::len(array::distinct(array::concat(${cut.join(",")},$beyond))),membersCut:array::len($linkRows) > ${linkingMembers},joinsUnchecked:array::len($linked) > ${MAX_EXPANDED_TASKS}`,
   }
 }

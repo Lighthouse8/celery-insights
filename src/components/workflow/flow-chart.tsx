@@ -6,7 +6,13 @@ import { TaskNodeFieldsContext, useTaskNodeFields } from "@hooks/use-task-node-f
 import { TASK_NODE_LABEL_GAP, TASK_NODE_LABEL_LINE_HEIGHT, TASK_NODE_LABEL_WIDTH } from "@lib/task-node-fields"
 import useSettingsStore from "@stores/use-settings-store"
 import type { Task } from "@/types/surreal-records"
-import { type JoinedRuns, MAX_JOINED_RUNS, MAX_LINKING_MEMBERS, NO_JOINED_RUNS } from "@lib/joined-runs"
+import {
+  type JoinedRuns,
+  MAX_EXPANDED_TASKS,
+  MAX_JOINED_RUNS,
+  MAX_LINKING_MEMBERS,
+  NO_JOINED_RUNS,
+} from "@lib/joined-runs"
 import { Camera, Focus, Maximize2, Move, Navigation } from "lucide-react"
 import { toSvg } from "html-to-image"
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
@@ -416,7 +422,13 @@ export const refreshNodeData = (nodes: Node[], tasks: Task[], joinedTasks: Task[
 
 const listFormat = new Intl.ListFormat("en", { type: "conjunction" })
 
-export const hiddenJoinsNote = (runs: number, links: number, branches = 0, membersCut = false): string | undefined => {
+export const hiddenJoinsNote = (
+  runs: number,
+  links: number,
+  branches = 0,
+  membersCut = false,
+  joinsUnchecked = false,
+): string | undefined => {
   const parts = [
     runs && `${runs} more joined run${runs === 1 ? "" : "s"}`,
     links && `${links} join link${links === 1 ? "" : "s"}`,
@@ -426,6 +438,8 @@ export const hiddenJoinsNote = (runs: number, links: number, branches = 0, membe
     parts.length && `${listFormat.format(parts)} not shown`,
     membersCut &&
       `Joins from members beyond the first ${MAX_LINKING_MEMBERS.toLocaleString("en")} that joined runs aren't shown`,
+    joinsUnchecked &&
+      `Joined ids beyond the first ${MAX_EXPANDED_TASKS.toLocaleString("en")} weren't checked, so there may be more joined runs not shown`,
   ].filter((line): line is string => !!line)
   return lines.length ? lines.join("\n") : undefined
 }
@@ -589,6 +603,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId,
         graph.hiddenJoinLinks,
         graph.hiddenJoinedBranches,
         joinedRuns?.membersCut,
+        joinedRuns?.joinsUnchecked,
       ),
     [graph, joinedRuns],
   )

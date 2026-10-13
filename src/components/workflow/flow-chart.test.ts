@@ -927,6 +927,18 @@ describe("getFlowGraph joined runs", () => {
     expect(getByText("Joins from members beyond the first 10,000 that joined runs aren't shown")).toBeInTheDocument()
   })
 
+  it("notes that the joined-run count is a lower bound once the read left joined ids unchecked", () => {
+    const unchecked = "Joined ids beyond the first 2,000 weren't checked, so there may be more joined runs not shown"
+    expect(hiddenJoinsNote(0, 0, 0, false, true)).toBe(unchecked)
+    expect(hiddenJoinsNote(3, 0, 0, false, true)).toBe(`3 more joined runs not shown\n${unchecked}`)
+    const tasks = [createTask({ id: "root" })]
+    const joinedRuns = { ...NO_JOINED_RUNS, joinsUnchecked: true }
+    const { getByText } = render(
+      createElement(ReactFlowProvider, null, createElement(FlowChart, { tasks, rootTaskId: "root", joinedRuns })),
+    )
+    expect(getByText(unchecked)).toBeInTheDocument()
+  })
+
   it("gives joined nodes ids no member node has", () => {
     const tasks = [
       createTask({ id: "root", joined_tasks: ["run-1", "joined:run-1"] }),
