@@ -81,7 +81,8 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
       appliedRef.current = request
       setError(err instanceof Error ? err : new Error(String(err)))
     } finally {
-      if (request === appliedRef.current) setIsLoading(false)
+      // Only the newest request ends loading; an older one may still finish after the task id changed.
+      if (request === requestRef.current) setIsLoading(false)
     }
   }, [db, taskId])
 

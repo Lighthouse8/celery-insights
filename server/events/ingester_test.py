@@ -173,21 +173,13 @@ class TestBuildTaskUpsert:
     # check which clauses each event writes.
     def test_retries_only_go_up(self):
         query, params = build_task_upsert(
-            {"type": "task-started", "uuid": "abc", "timestamp": 1700000000.0, "retries": 2}, 0
+            {"type": "task-received", "uuid": "abc", "timestamp": 1700000000.0, "retries": 2}, 0
         )
 
-        assert "retries = (IF" in query
-        assert "math::max" in query
+        assert "retries = math::max(" in query
         assert params["t0_retries"] == 2
-
-    @pytest.mark.parametrize("event_type", ["task-sent", "task-received"])
-    def test_send_and_receive_can_start_a_new_run(self, event_type: str):
-        query, _ = build_task_upsert({"type": event_type, "uuid": "abc", "timestamp": 1700000000.0, "retries": 0}, 0)
-
-        for field in ("retries", "progress", "run_started_at", "revoked_at"):
-            assert f"{field} = IF" in query
-        # Only a worker's receive with fewer retries marks a replaced task.
-        assert ("$t0_retries < $t0_previous.retries" in query) == (event_type == "task-received")
+        # A receive never clears progress; only a new attempt's start or retry does.
+        assert "progress" not in query
 
     def test_unique_param_prefix_per_index(self):
         _, params_0 = build_task_upsert({"type": "task-sent", "uuid": "a", "timestamp": 1700000000.0}, 0)

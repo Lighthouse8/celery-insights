@@ -53,8 +53,6 @@ DEFINE FIELD OVERWRITE progress.updated_at ON task TYPE datetime;
 DEFINE FIELD OVERWRITE progress.attempt ON task TYPE option<int>;
 -- Latest attempt's start (started_at keeps the first); rejects late progress from earlier attempts.
 DEFINE FIELD OVERWRITE last_started_at ON task TYPE option<datetime>;
--- Start of the current run of a reused task id; earlier runs' late retries and progress are ignored.
-DEFINE FIELD OVERWRITE run_started_at ON task TYPE option<datetime>;
 
 DEFINE INDEX OVERWRITE idx_task_state ON task FIELDS state;
 DEFINE INDEX OVERWRITE idx_task_type ON task FIELDS type;

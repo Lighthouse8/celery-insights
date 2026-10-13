@@ -418,35 +418,13 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
     if event_type == "task-failed" or event.get("exception") or event.get("traceback"):
         set_clauses.append("had_error = true")
 
-    # Retries only go up within a run, and a retry's task-received can come from a worker whose clock is
-    # behind; progress ordering by attempt needs the latest count. An event dated before the current run
-    # started (run_started_at) is a late one from an earlier run of the same id and doesn't count.
+    # Retries only go up, and a retry's task-received can come from a worker whose clock is behind;
+    # progress ordering by attempt needs the latest count.
     event_retries = event.get("retries")
     has_retries = isinstance(event_retries, int) and not isinstance(event_retries, bool)
     retries = f"${p}_previous.retries ?? 0"
     if has_retries:
-        retries = (
-            f"(IF ${p}_previous.run_started_at != NONE AND <datetime>${p}_ts < ${p}_previous.run_started_at"
-            f" THEN {retries} ELSE math::max([{retries}, ${p}_retries]) END)"
-        )
-
-    if event_type in ("task-sent", "task-received"):
-        # A send or receive the stored run can't explain starts a new run of the same id: one after a
-        # finished run (apply_async(task_id=...)), or a receive with fewer retries, which a run never
-        # lowers (self.replace() keeps the id and starts from 0). Its retries and progress start over.
-        # Telling runs apart by $apply assumes worker clocks agree to within the gap between the runs.
-        new_run = f"${p}_apply AND (${p}_previous.state IN {TERMINAL_TASK_STATES_SQL}"
-        if event_type == "task-received" and has_retries:
-            new_run += f" OR ${p}_retries < ${p}_previous.retries"
-        new_run += ")"
-        set_clauses += [
-            f"progress = IF {new_run} THEN NONE ELSE ${p}_previous.progress END",
-            f"run_started_at = IF {new_run} THEN <datetime>${p}_ts ELSE ${p}_previous.run_started_at END",
-            # The poller matches a REVOKED result to this run's own task-revoked by revoked_at.
-            f"revoked_at = IF {new_run} THEN NONE ELSE ${p}_previous.revoked_at END",
-        ]
-        if has_retries:
-            retries = f"IF {new_run} THEN ${p}_retries ELSE {retries} END"
+        retries = f"math::max([{retries}, ${p}_retries])"
 
     if event_type in ("task-retried", "task-started"):
         # A retry starts from zero, so both events drop progress reported before them. task-retried
@@ -610,8 +588,6 @@ def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
             f" AND (last_started_at IS NONE OR <datetime>${p}_ts >= last_started_at)"
         )
 
-    # A report dated before the current run started is a late one from an earlier run of the same id.
-    accept = f"(run_started_at IS NONE OR <datetime>${p}_ts >= run_started_at) AND {accept}"
     query = (
         f"UPDATE type::record('task', ${p}_id) SET progress = "
         f"IF {accept} THEN {{ {', '.join(fields)} }} ELSE progress END"
