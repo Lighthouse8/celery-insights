@@ -11,7 +11,7 @@ import useSettingsStore, {
   useDeploymentSettings,
 } from "@stores/use-settings-store"
 import { startTour } from "@stores/use-tour-store"
-import { invalidTaskNodeFields } from "@lib/task-node-fields"
+import { invalidTaskNodeFields, parseTaskNodeFields } from "@lib/task-node-fields"
 
 const SettingRow = ({
   title,
@@ -143,7 +143,14 @@ const SettingsPanel = ({ hideHeader = false }: { hideHeader?: boolean }) => {
               value={taskNodeFields}
               disabled={!taskNodeLabels}
               aria-invalid={invalidFields.length > 0}
-              onChange={(event) => useSettingsStore.setState({ taskNodeFields: event.target.value })}
+              onChange={(event) => {
+                const paths = parseTaskNodeFields(event.target.value).map((field) => field.path)
+                // A field hidden from the graph shows again once it leaves the list and comes back.
+                useSettingsStore.setState((state) => ({
+                  taskNodeFields: event.target.value,
+                  hiddenTaskNodeFields: state.hiddenTaskNodeFields.filter((path) => paths.includes(path)),
+                }))
+              }}
             />
           }
         />

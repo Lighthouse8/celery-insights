@@ -79,6 +79,67 @@ describe("reprItems", () => {
     )
   })
 
+  it("ends saferepr's unescaped bytes and custom reprs at the first close a delimiter follows", () => {
+    expect(reprItems(fixtureKwargs("bytes_before"))).toEqual(
+      new Map([
+        ["organization_id", "11"],
+        ["blob", "b'it's'"],
+      ]),
+    )
+    expect(reprItems(fixtureKwargs("bytes_after"))).toEqual(
+      new Map([
+        ["blob", "b'it's'"],
+        ["organization_id", "12"],
+      ]),
+    )
+    expect(reprItems(fixtureKwargs("bytes_apostrophe"))).toEqual(
+      new Map([
+        ["blob", "b'it's'"],
+        ["organization_id", "14"],
+        ["note", "it\\'s"],
+      ]),
+    )
+    expect(reprItems(fixtureKwargs("bytes_text_inside"))).toEqual(
+      new Map([["note", 'see b\\\'x, "organization_id": 1, c']]),
+    )
+    expect(reprItems(fixtureKwargs("two_bytes"))).toEqual(
+      new Map([
+        ["a", "b'it's'"],
+        ["organization_id", "27"],
+        ["b", "b'it's'"],
+      ]),
+    )
+    expect(reprItems(fixtureKwargs("two_reprs"))).toEqual(
+      new Map([
+        ["a", "<Opaque it's>"],
+        ["organization_id", "28"],
+        ["b", "<Opaque it's>"],
+      ]),
+    )
+    // A \' that a letter follows never ends a string, even when the junk after it would split as bytes.
+    expect(reprItems("{'note': 'it\\'s, b', 'y': 1}")).toEqual(
+      new Map([
+        ["note", "it\\'s, b"],
+        ["y", "1"],
+      ]),
+    )
+    expect(reprItems("{'note': 'it\\'s', 'blob': b'it's', 'id': 1}")).toEqual(
+      new Map([
+        ["note", "it\\'s"],
+        ["blob", "b'it's'"],
+        ["id", "1"],
+      ]),
+    )
+    // saferepr of {'note': "'a', b", 'id': 1}: the \' before the comma also splits when the b' after it reads as
+    // bytes, but the real close splits and a delimiter follows it too.
+    expect(reprItems("{'note': '\\'a\\', b', 'id': 1}")).toEqual(
+      new Map([
+        ["note", "\\'a\\', b"],
+        ["id", "1"],
+      ]),
+    )
+  })
+
   it("splits thousands of strings after a \\' without a stack frame per string", () => {
     const text = `('x\\'', ${"'',".repeat(2_700)})`
     const nested = <T>(frames: number, run: () => T): T => (frames ? nested(frames - 1, run) : run())

@@ -1,6 +1,5 @@
-import { render, waitFor } from "@test-utils"
+import { act, fireEvent, render, waitFor } from "@test-utils"
 import { createTask } from "@test-fixtures"
-import { fireEvent } from "@testing-library/react"
 import { type JoinedRuns, MAX_JOINED_RUNS, NO_JOINED_RUNS } from "@lib/joined-runs"
 import { TASK_NODE_LABEL_GAP } from "@lib/task-node-fields"
 import useSettingsStore from "@stores/use-settings-store"
@@ -19,13 +18,16 @@ import FlowChart, {
   respaceNodes,
 } from "./flow-chart"
 
+const { getNodesBounds } = vi.hoisted(() => ({ getNodesBounds: vi.fn() }))
 const viewportMoves = vi.hoisted(() => ({ setCenter: vi.fn(), setViewport: vi.fn(), fitBounds: vi.fn() }))
 vi.mock("@xyflow/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@xyflow/react")>()
   // One stable wrapper per instance, as useReactFlow's own result is stable.
   const wrapped = new WeakMap<object, ReturnType<typeof actual.useReactFlow>>()
+  getNodesBounds.mockImplementation(actual.getNodesBounds)
   return {
     ...actual,
+    getNodesBounds,
     useReactFlow: () => {
       const flow = actual.useReactFlow()
       if (!wrapped.has(flow)) wrapped.set(flow, { ...flow, ...viewportMoves })
@@ -40,6 +42,7 @@ vi.mock("@tanstack/react-router", () => ({
 
 describe("FlowChart", () => {
   beforeEach(() => {
+    getNodesBounds.mockClear()
     // happy-dom lays nothing out: report every observed node as a 60px avatar.
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(60)
     vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(60)
@@ -65,14 +68,28 @@ describe("FlowChart", () => {
   })
 
   const tasks = [createTask({ id: "root" }), createTask({ id: "child", parent_id: "root" })]
-  const renderChart = () =>
-    render(createElement(ReactFlowProvider, null, createElement(FlowChart, { tasks, rootTaskId: "root" })))
+  const chart = (chartTasks = tasks) =>
+    createElement(ReactFlowProvider, null, createElement(FlowChart, { tasks: chartTasks, rootTaskId: "root" }))
+  const renderChart = () => render(chart())
 
   it("fits the graph on mount once React Flow has measured the nodes", async () => {
     renderChart()
 
     await waitFor(() => expect(viewportMoves.fitBounds).toHaveBeenCalledTimes(1))
     expect(viewportMoves.fitBounds.mock.calls[0][0]).toEqual({ x: 0, y: 0, width: 240, height: 60 })
+  })
+
+  it("does nothing from the Fit view button while nodes are unmeasured, and fits nothing later", async () => {
+    const { container, rerender } = renderChart()
+    await waitFor(() => expect(viewportMoves.fitBounds).toHaveBeenCalledTimes(1))
+
+    // A layout change replaces the node objects, which drops their measurements until React Flow measures again.
+    // (A live update that keeps the layout only refreshes node data and keeps the measurements.)
+    rerender(chart([...tasks, createTask({ id: "grandchild", parent_id: "child" })]))
+    fireEvent.click(container.querySelectorAll(".react-flow__controls-button")[1])
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+
+    expect(viewportMoves.fitBounds).toHaveBeenCalledTimes(1)
   })
 
   const miniMap = async () => {
@@ -97,6 +114,8 @@ describe("FlowChart", () => {
       { x: 180, y: 0, width: 60, height: 60 },
     ])
     expect(view.x).toBeGreaterThan(-80)
+    // The MiniMap margin needs node bounds only for labels.
+    expect(getNodesBounds).not.toHaveBeenCalled()
   })
 
   it("draws MiniMap nodes with their labels and keeps the labels inside the MiniMap", async () => {

@@ -26,6 +26,15 @@ describe("useSettingsStore", () => {
     expect(state.theme).toBe(PreferredTheme.SYSTEM)
     expect(state.hideWelcomeBanner).toBe(false)
   })
+
+  it("replaces the state on setState(state, true), recording only that state's settings as chosen", () => {
+    useSettingsStore.setState({ hideWelcomeBanner: true })
+
+    useSettingsStore.setState({ theme: PreferredTheme.DARK } as ReturnType<typeof useSettingsStore.getState>, true)
+
+    expect(useSettingsStore.getState()).toEqual({ theme: PreferredTheme.DARK, userSet: ["theme"] })
+    useSettingsStore.setState(useSettingsStore.getInitialState(), true)
+  })
 })
 
 describe("useIsDefaultSettings", () => {
