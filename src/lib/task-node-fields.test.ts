@@ -130,12 +130,67 @@ describe("reprItems", () => {
         ["id", "1"],
       ]),
     )
-    // saferepr of {'note': "'a', b", 'id': 1}: the \' before the comma also splits when the b' after it reads as
-    // bytes, but the real close splits and a delimiter follows it too.
-    expect(reprItems("{'note': '\\'a\\', b', 'id': 1}")).toEqual(
+  })
+
+  it("reads no labels from an item whose string has more than one possible end", () => {
+    // saferepr writes {'note': "a', b", 'blob': b"it's", 'id': 1} and {'note': 'a\\', b", 'blob": b"it's", 'id': 1}
+    // alike.
+    expect(reprItems("{'note': 'a\\', b', 'blob': b'it's', 'id': 1}")).toEqual(new Map())
+    // {'note': "'a', b", 'id': 1} or {'note': "'a", b", 'id": 1}.
+    expect(reprItems("{'note': '\\'a\\', b', 'id': 1}")).toEqual(new Map())
+    // ('C:\\', ', b', 'x') or ("C:', ", b", 'x").
+    expect(reprItems("('C:\\', ', b', 'x')")).toEqual(new Map())
+    // The items before the ambiguous one still read; the ambiguous one hides where the next starts.
+    expect(reprItems("{'id': 1, 'when': None, 'note': 'a\\', b', 'blob': b'it's', 'last': 2}")).toEqual(
       new Map([
-        ["note", "\\'a\\', b"],
         ["id", "1"],
+        ["when", "None"],
+      ]),
+    )
+    expect(reprItems("{'id': 1, 'lanes': [{'path': 'C:\\', ', b', 'x'}], 'last': 2}")).toEqual(new Map([["id", "1"]]))
+    // {'b': b"x', y", 'c': 1}: saferepr leaves the bytes' quote raw, and the rest doesn't split after the first
+    // close a delimiter follows, so the bytes value has no clear end.
+    expect(reprItems("{'id': 1, 'a': b'q', 'b': b'x', y', 'c': 1}")).toEqual(
+      new Map([
+        ["id", "1"],
+        ["a", "b'q'"],
+      ]),
+    )
+    // The bytes value can still end at y', so the note may close at either quote.
+    expect(reprItems("{'id': 1, 'm': <M>, 'n': 'a\\', b', 'b': b'x', y', 'c': 1}")).toEqual(
+      new Map([
+        ["id", "1"],
+        ["m", "<M>"],
+      ]),
+    )
+    // {'b': b"x', 'y", 'c': 1}: after b'x' the dict would go on with a bare 'y', so that end is wrong somewhere, and
+    // no label from the first bytes or <…> value on is kept. Likewise a dict closed by ].
+    expect(reprItems("{'id': 1, 'b': b'x', 'y', 'c': 1}")).toEqual(new Map([["id", "1"]]))
+    expect(reprItems("{'id': 1, 'b': b'x'], 'c': 1}")).toEqual(new Map([["id", "1"]]))
+    // The first > after a delimiter may close the inner repr.
+    expect(reprItems("{'id': 1, 'a': <Foo [<Bar>]>, 'c': 1}")).toEqual(new Map([["id", "1"]]))
+  })
+
+  it("labels common Fyr kwargs in full", () => {
+    expect(
+      reprItems(
+        "{'organization_id': 42, 'resource_id': 345, 'channel': 'facebook_ads', " +
+          "'run_id': '441e0722-bdb2-443e-aa7d-f282e8e4eae1', 'currency_code': 'NOK', 'end': None, " +
+          "'skip_assets': True, 'start': datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc), " +
+          "'name': 'O\\'Brien Ads', 'options': {'metrics': ['spend', 'clicks'], 'depth': 2, 'filter': {'a': None}}}",
+      ),
+    ).toEqual(
+      new Map([
+        ["organization_id", "42"],
+        ["resource_id", "345"],
+        ["channel", "facebook_ads"],
+        ["run_id", "441e0722-bdb2-443e-aa7d-f282e8e4eae1"],
+        ["currency_code", "NOK"],
+        ["end", "None"],
+        ["skip_assets", "True"],
+        ["start", "datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)"],
+        ["name", "O\\'Brien Ads"],
+        ["options", "{'metrics': ['spend', 'clicks'], 'depth': 2, 'filter': {'a': None}}"],
       ]),
     )
   })
@@ -168,6 +223,77 @@ describe("reprItems", () => {
         ["lanes", "yyy..."],
       ]),
     )
+    // A value cut inside its quotes or <…> runs past the marker: it gets no label, the items before it keep theirs.
+    const truncated = [...reprItems(fixtureKwargs("truncated"))]
+    expect(truncated.map(([key]) => key)).toEqual(["organization_id", "pad"])
+    expect(reprItems("{'org': 12, 'blob': b'q', 'ref': UUID('0000...")).toEqual(
+      new Map([
+        ["org", "12"],
+        ["blob", "b'q'"],
+      ]),
+    )
+    expect(reprItems("{'name': 'O\\'Brien Ads', 'ref': UUID('0000...")).toEqual(new Map([["name", "O\\'Brien Ads"]]))
+    expect(reprItems("{'id': 1, 'a': <Foo 1, 2...")).toEqual(new Map([["id", "1"]]))
+    expect(reprItems("(<Foo 1, 2...")).toEqual(new Map())
+    // A bare < is still a plain character.
+    expect(reprItems("(1 < 2, 'yyy...', ...)")).toEqual(
+      new Map([
+        ["0", "1 < 2"],
+        ["1", "yyy..."],
+      ]),
+    )
+  })
+
+  it("reads text past the length cap as if cut there, dropping the item the cut runs into", () => {
+    // Full kwargs from the result backend, with a canvas kwarg that runs far past the cap.
+    const lane = "{'task': 'marketing.resource_level', 'args': [], 'kwargs': {'resource_id': 3, 'name': \"it's\"}}, "
+    const canvas =
+      "{'resource_id': 3, 'currency_code': 'NOK', 'start': None, 'skip_assets': False, " +
+      "'run_id': '441e0722-bdb2-443e-aa7d-f282e8e4eae1', 'organization_id': 1, " +
+      `'then_start_lanes': {'lanes': [${lane.repeat(200)}], 'channel': 'meta-ads', 'resource_id': 3}}`
+    expect(canvas.length).toBeGreaterThan(16_384)
+    expect(reprItems(canvas)).toEqual(
+      new Map([
+        ["resource_id", "3"],
+        ["currency_code", "NOK"],
+        ["start", "None"],
+        ["skip_assets", "False"],
+        ["run_id", "441e0722-bdb2-443e-aa7d-f282e8e4eae1"],
+        ["organization_id", "1"],
+      ]),
+    )
+
+    // Sweep the cut across every position of the items after a long first one: inside strings, nested values,
+    // keys and delimiters, the items read are always the leading items of the uncut text.
+    const tail =
+      ", 'run_id': \"it's, 'x': 1\", 'nested': {'a': [1, 'b, c'], 'd': {'e': ('f', 2)}}, " +
+      "'path': 'C:\\', 'when': datetime.date(2024, 1, 2), 'last': 'z'}"
+    const uncut = [...reprItems(`{'pad': ''${tail}`)].slice(1)
+    expect(uncut.map(([key]) => key)).toEqual(["run_id", "nested", "path", "when", "last"])
+    let read = 0
+    for (let shift = tail.length - 1; shift >= 0; shift--) {
+      // The text is 8,192 + shift long, so the cut falls shift characters before its end.
+      const pad = "x".repeat(8_192 - 10 - tail.length + shift)
+      const [first, ...rest] = reprItems(`{'pad': '${pad}'${tail}`)
+      expect(first).toEqual(["pad", pad])
+      expect(rest).toEqual(uncut.slice(0, rest.length))
+      expect(rest.length).toBeGreaterThanOrEqual(read)
+      read = rest.length
+    }
+    expect(read).toBe(uncut.length)
+
+    // Cut after `\', 9`, the note may close at that \' or past the cut, so it gets no label.
+    const note = `{'id': 1, 'note': '${"x".repeat(8_192 - 24)}\\', 9zzz', 'last': 2}`
+    expect(note.slice(8_187, 8_192)).toBe("\\', 9")
+    expect(reprItems(note)).toEqual(new Map([["id", "1"]]))
+
+    // A string crossing the cut whose only quote before it is a \' gets no label either.
+    for (const crossing of [`'it\\'s "x", more${"y".repeat(9_000)}'`, `'a\\', b${"z".repeat(9_000)}'`])
+      expect(reprItems(`{'id': 1, 'note': ${crossing}}`)).toEqual(new Map([["id", "1"]]))
+    // A custom repr with no close before the cut runs past it.
+    expect(reprItems(`{'id': 1, 'a': <Foo 1, 2${"x".repeat(9_000)}>}`)).toEqual(new Map([["id", "1"]]))
+    // A cut that makes both readings of an escaped close split is ambiguous.
+    expect(reprItems(`{'id': 1, 'note': 'a\\', b', 'pad': '${"x".repeat(9_000)}'}`)).toEqual(new Map([["id", "1"]]))
   })
 })
 
