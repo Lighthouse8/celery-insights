@@ -324,6 +324,22 @@ Existing tasks are indexed automatically. Set `false` to remove the indexes at s
 
 For a shared database, stop all instances, give them the same setting, and restart them together.
 
+## Task node labels (experimental)
+
+Default: off, fields `type`
+
+Show task fields as text under each task in the workflow graph. Each browser can switch labels and individual fields on and off from Settings and the graph's label control; these settings only choose the default.
+
+```toml
+[ui.defaults]
+task_node_labels = true
+task_node_fields = "type,kwargs.channel,kwargs.organization_id:org"
+```
+
+Or set `CELERY_INSIGHTS_UI_TASK_NODE_LABELS=true` and `CELERY_INSIGHTS_UI_TASK_NODE_FIELDS=type,kwargs.channel,kwargs.organization_id:org`.
+
+Fields are comma-separated: a task attribute (`id`, `type`, `state`, `worker`, `routing_key`, `exchange`, `retries`, `runtime`, `eta`, `expires`, `root_id`, `parent_id`), `kwargs.<name>`, or `args.<index>`. Add `:alias` to rename a field in its label. The task name shows its last dotted part; hover a label for the full value. Argument labels need payload access and are empty for tasks whose arguments are restricted.
+
 ## Retention and cleanup
 
 Retention policies are enforced by the Python cleanup job rather than native SurrealDB TTL behavior.
@@ -397,6 +413,8 @@ How often the cleanup job evaluates and applies retention policies.
 | `ui.defaults.theme` | string | — | — |
 | `ui.defaults.hide_welcome_banner` | boolean | — | — |
 | `ui.defaults.raw_events_limit` | number | — | — |
+| `ui.defaults.task_node_labels` | boolean | `CELERY_INSIGHTS_UI_TASK_NODE_LABELS` | — |
+| `ui.defaults.task_node_fields` | string | `CELERY_INSIGHTS_UI_TASK_NODE_FIELDS` | — |
 | `authentication.session.secret` / `_file` | string; sensitive | `CELERY_INSIGHTS_SESSION_SECRET` / `_FILE` | — |
 | `authentication.session.max_age_seconds` | number | — | — |
 | `authentication.oidc.issuer` | string | — | — |
