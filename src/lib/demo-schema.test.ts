@@ -74,6 +74,7 @@ describe("DEMO_SCHEMA", () => {
       "progress.sections.*.total",
       "progress.updated_at",
       "progress.attempt",
+      "max_retries",
       "last_started_at",
     ]
     for (const field of expectedFields) {

@@ -63,6 +63,8 @@ export interface SurrealTask {
   traceback?: string | null
   progress?: SurrealTaskProgress | null
   last_started_at?: string | null
+  /** Highest retry count seen; `retries` is the latest applied one. Missing on rows stored before it existed. */
+  max_retries?: number | null
 }
 
 export interface SurrealWorkflow {
@@ -318,10 +320,12 @@ export const parseTask = (raw: SurrealTask): Task => ({
   result_truncated: raw.result_truncated,
   exception: raw.exception || undefined,
   traceback: raw.traceback || undefined,
-  // A report from an attempt before the current one belongs to a failed attempt. The ingester applies the
-  // same rule when storing reports and on new attempts (server/events/ingester.py); change them together.
+  // A report from an attempt below the highest retry count seen belongs to a failed attempt. The ingester
+  // applies the same rule when storing reports and on new attempts (server/events/ingester.py); change them
+  // together.
   progress:
-    raw.progress && !(typeof raw.progress.attempt === "number" && raw.progress.attempt < (raw.retries ?? 0))
+    raw.progress &&
+    !(typeof raw.progress.attempt === "number" && raw.progress.attempt < (raw.max_retries ?? raw.retries ?? 0))
       ? {
           current: raw.progress.current,
           total: raw.progress.total ?? undefined,

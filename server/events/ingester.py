@@ -418,25 +418,27 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
     if event_type == "task-failed" or event.get("exception") or event.get("traceback"):
         set_clauses.append("had_error = true")
 
-    # Retries only go up, and a retry's task-received can come from a worker whose clock is behind;
-    # progress ordering by attempt needs the latest count.
+    # max_retries is the highest retry count seen, for progress ordering only: a retry's task-received can come
+    # from a worker whose clock is behind, so retries (the latest applied count) can lag. Rows stored before
+    # max_retries existed fall back to retries.
     event_retries = event.get("retries")
     has_retries = isinstance(event_retries, int) and not isinstance(event_retries, bool)
-    retries = f"${p}_previous.retries ?? 0"
+    max_retries = f"${p}_previous.max_retries ?? ${p}_previous.retries ?? 0"
     if has_retries:
-        retries = f"math::max([{retries}, ${p}_retries])"
+        max_retries = f"math::max([{max_retries}, ${p}_retries])"
+        set_clauses.append(f"max_retries = {max_retries}")
 
     if event_type in ("task-retried", "task-started"):
         # A retry starts from zero, so both events drop progress reported before them. task-retried
         # comes from the failed attempt's own worker, whose clock orders that attempt's reports even
         # when the next attempt's worker clock runs behind. Reports that carry their attempt are
-        # ordered by it instead: they are dropped once retries passes their attempt, and a delayed
+        # ordered by it instead: they are dropped once max_retries passes their attempt, and a delayed
         # retry event can't clear the next attempt's progress. build_task_progress_update and parseTask
-        # apply the same "attempt below retries is stale" rule.
+        # apply the same "attempt below max_retries is stale" rule.
         set_clauses.append(
             f"progress = IF (${p}_previous.progress.attempt IS NONE"
             f" AND ${p}_previous.progress.updated_at < <datetime>${p}_ts)"
-            f" OR (${p}_previous.progress.attempt != NONE AND ${p}_previous.progress.attempt < ({retries}))"
+            f" OR (${p}_previous.progress.attempt != NONE AND ${p}_previous.progress.attempt < ({max_retries}))"
             f" THEN NONE ELSE ${p}_previous.progress END"
         )
     if event_type == "task-started":
@@ -456,9 +458,6 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
         if value is not None:
             pname = f"{p}_{db_field}"
             params[pname] = value if isinstance(value, int | float) else str(value)
-            if db_field == "retries" and has_retries:
-                set_clauses.append(f"retries = {retries}")
-                continue
             # Result polling can observe a newer state before send/receive metadata arrives.
             set_clauses.append(
                 f"{db_field} = IF ${p}_previous.{db_field} IS NONE OR {apply_fields}"
@@ -568,13 +567,14 @@ def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
     if isinstance(attempt, int) and not isinstance(attempt, bool) and 0 <= attempt <= PROGRESS_MAX_NUMBER:
         # The attempt (the task's retry count) orders reports across workers whose clocks
         # disagree: a later attempt always wins, time only orders reports within one attempt,
-        # and a report from an attempt before the task's current retries is ignored. The same
-        # "attempt below retries is stale" rule clears progress in build_task_upsert and hides it
-        # in parseTask (src/types/surreal-records.ts); change all three together.
+        # and a report from an attempt below the highest retry count seen (max_retries, or retries on rows
+        # stored before it existed) is ignored. The same "attempt below max_retries is stale" rule clears
+        # progress in build_task_upsert and hides it in parseTask (src/types/surreal-records.ts); change all
+        # three together.
         params[f"{p}_attempt"] = attempt
         fields.append(f"attempt: ${p}_attempt")
         accept = (
-            f"${p}_attempt >= (retries ?? 0) AND (progress.attempt IS NONE"
+            f"${p}_attempt >= (max_retries ?? retries ?? 0) AND (progress.attempt IS NONE"
             f" OR ${p}_attempt > progress.attempt"
             f" OR (${p}_attempt = progress.attempt AND <datetime>${p}_ts >= progress.updated_at))"
         )
