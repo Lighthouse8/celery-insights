@@ -87,4 +87,33 @@ describe("runSchemaMigration against SurrealDB", () => {
       ["observed_running", "2026-10-06T12:10:00.000Z"],
     ])
   }, 30_000)
+
+  it("indexes joins recorded before joined_workflow_id existed", async () => {
+    await db
+      .query(
+        "REMOVE INDEX IF EXISTS idx_task_joined_workflow_id ON task; REMOVE FIELD IF EXISTS joined_workflow_id ON task",
+      )
+      .collect()
+    await db
+      .query(
+        "CREATE task:old_joiner SET state = 'SUCCESS', workflow_id = 'old_flow', joined_tasks = ['run'], last_updated = time::now()",
+      )
+      .collect()
+    await runSchemaMigration(
+      {
+        ...parseConfig({
+          SURREALDB_EXTERNAL_URL: server.endpoint,
+          SURREALDB_NAMESPACE: "migration",
+          SURREALDB_DATABASE: "upgrade",
+        }),
+        surrealdbRootPass: "root",
+      },
+      silent,
+    )
+
+    const [rows] = await db
+      .query<[string[]]>("SELECT VALUE record::id(id) FROM task WHERE joined_workflow_id = 'old_flow'")
+      .collect()
+    expect(rows).toEqual(["old_joiner"])
+  }, 30_000)
 })

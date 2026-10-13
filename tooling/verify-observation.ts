@@ -4,6 +4,7 @@ import { initializeAuthentication } from "../runtime/security/http"
 import { scopedDatabase, intersectScopes } from "../runtime/security/read-scope"
 import { SearchIndexes } from "../runtime/search-indexes"
 import { buildRead, operations } from "../runtime/observation/queries"
+import { joinedRunsQuery, MAX_EXPANDED_TASKS, MAX_EXPANSION_DEPTH, MAX_JOINED_RUNS } from "../src/lib/joined-runs"
 import assert from "node:assert/strict"
 import { createServer } from "node:net"
 import { randomBytes } from "node:crypto"
@@ -202,6 +203,30 @@ try {
   assert.equal(payloadOnly[0].relationships_restricted, false)
   const [hidden] = await scoped.query<[unknown[]]>("SELECT * FROM type::record('task', $taskId)", { taskId: "hidden" })
   assert.deepEqual(hidden, [])
+  // Point reads project the record itself; among many rows they must return exactly what a table scan would.
+  await root.query(
+    "FOR $i IN 0..40 { CREATE type::record('task', 'bulk_' + <string>$i) SET type = 'bulk', state = 'SUCCESS', workflow_id = 'bulk', result = 'bulk-result', args = 'bulk-args', last_updated = time::now(); CREATE type::record('event', 'bulk_' + <string>$i) SET task_id = 'bulk_' + <string>$i, event_type = 'task-succeeded', timestamp = time::now(); }",
+  )
+  const pointRead = async (db: Pick<Surreal, "query">, table: string, id: string) =>
+    (await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM type::record('${table}', $id)`, { id }))[0]
+  const payloadScope = scopedDatabase(root, { deny_fields: ["task.result.read"] })
+  const [payloadRead] = await pointRead(payloadScope, "task", "bulk_7")
+  assert.equal(String(payloadRead.id), "task:bulk_7")
+  assert.equal(payloadRead.args, "bulk-args")
+  assert.equal(payloadRead.result, undefined)
+  assert.deepEqual(payloadRead.restricted_fields, ["task.result.read"])
+  assert.equal(payloadRead.workflow_id, "bulk")
+  assert.deepEqual(await pointRead(payloadScope, "task", "bulk_missing"), [])
+  const rowScope = scopedDatabase(root, { task_ids: ["bulk_3"], deny_fields: ["task.input.read"] })
+  const [rowRead] = await pointRead(rowScope, "task", "bulk_3")
+  assert.equal(String(rowRead.id), "task:bulk_3")
+  assert.equal(rowRead.result, "bulk-result")
+  assert.equal(rowRead.args, undefined)
+  assert.equal(rowRead.workflow_id, undefined)
+  assert.deepEqual(await pointRead(rowScope, "task", "bulk_4"), [])
+  assert.equal((await pointRead(rowScope, "event", "bulk_3")).length, 1)
+  assert.deepEqual(await pointRead(rowScope, "event", "bulk_4"), [])
+  await root.query("DELETE task WHERE type = 'bulk'; DELETE event WHERE string::starts_with(task_id, 'bulk_');")
   const [counts, events, workflows, search] = await scoped.query<[unknown[], unknown[], unknown[], unknown[]]>(
     "SELECT count() AS count FROM task GROUP ALL; SELECT * FROM event; SELECT * FROM workflow; SELECT * FROM task WHERE string::contains(result ?? '', 'private-result');",
   )
@@ -234,6 +259,196 @@ try {
     const read = buildRead({ operation, from: "2000-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", taskId: "sample" })
     await scoped.query(read.sql, read.bindings)
   }
+  // Joined runs belong to other workflows and are read through the same scoped projection as members.
+  type WorkflowRead = {
+    members: unknown[]
+    expanded: Array<Record<string, unknown>>
+    expansionCut: number
+    joinedIds: string[]
+    walkedIds: string[]
+    joinedTotal: number
+    membersCut: boolean
+    joinsUnchecked: boolean
+  }
+  const workflowRead = buildRead({ operation: "task-workflow", taskId: "sample" })
+  const readWorkflow = async (db: Pick<Surreal, "query">, read = workflowRead) =>
+    (await db.query(read.sql, read.bindings).collect()).at(-1) as WorkflowRead
+  const unjoined = await readWorkflow(root)
+  assert.deepEqual([unjoined.joinedIds, unjoined.joinedTotal, unjoined.expanded], [[], 0, []], "no joins, no lookups")
+  await root.query("UPDATE task:sample SET joined_tasks = ['hidden', 'ghost']")
+  const joinedRuns = async (db: Pick<Surreal, "query">) => (await readWorkflow(db)).expanded
+  const allJoined = await joinedRuns(root)
+  assert.deepEqual(
+    allJoined.map((task) => String(task.id)),
+    ["task:hidden"],
+    "unknown joined runs are omitted",
+  )
+  assert.equal(allJoined[0].state, "SUCCESS")
+  const payloadJoined = await joinedRuns(scopedDatabase(root, { deny_fields: ["task.result.read"] }))
+  assert.deepEqual(
+    payloadJoined.map((task) => String(task.id)),
+    ["task:hidden"],
+  )
+  assert.deepEqual(await joinedRuns(scoped), [], "task scopes hide joined runs like other relationships")
+  assert.deepEqual((await readWorkflow(scoped)).joinedIds, [])
+  const ghosted = await readWorkflow(root)
+  assert.deepEqual(
+    [ghosted.joinedIds, ghosted.joinedTotal],
+    [["ghost", "hidden"], 2],
+    "chosen ids keep unloadable runs",
+  )
+  // The read chooses the joined runs a view shows: the first ids in id order over every member, members left out.
+  // 1,001 members put the oldest past the 1,000 the read returns. (The graph's 10,000-member view is covered in
+  // flow-chart.test.ts: seeding 10,001 tasks that share an indexed workflow_id takes minutes in SurrealDB 3.3.0.)
+  const bIds = Array.from({ length: MAX_JOINED_RUNS }, (_, index) => `b_${String(index).padStart(3, "0")}`)
+  await root.query(
+    "CREATE task:a_run SET state = 'SUCCESS', workflow_id = 'other', last_updated = time::now(); FOR $i IN 0..1001 { CREATE type::record('task', 'big_' + <string>(10000 + $i)) SET state = 'SUCCESS', workflow_id = 'big', last_updated = d'2020-01-01T00:00:00Z' + <duration>(<string>$i + 's'); }; UPDATE task:big_10000 SET joined_tasks = ['a_run', 'big_10500']; UPDATE task:big_11000 SET joined_tasks = $bIds;",
+    { bIds },
+  )
+  const bigRead = buildRead({ operation: "task-workflow", taskId: "big_11000" })
+  for (const db of [root, scopedDatabase(root, { deny_fields: ["task.result.read"] })]) {
+    const big = await readWorkflow(db, bigRead)
+    assert.equal(big.members.length, 1000)
+    // The oldest member, beyond the members returned, still competes for the first ids.
+    assert.deepEqual(big.joinedIds, ["a_run", ...bIds.slice(0, -1)])
+    assert.equal(big.joinedTotal, MAX_JOINED_RUNS + 1)
+    assert.equal(big.membersCut, false)
+    assert.deepEqual(
+      big.expanded.map((task) => String(task.id)),
+      ["task:a_run"],
+    )
+  }
+  // The links come from the members that joined (an index on joined_workflow_id), not a scan of every member.
+  const linkRows = joinedRunsQuery().statements[0].replace(/^LET \$linkRows = /, "")
+  const linkPlan = (await root.query(`LET $workflowId = 'big';EXPLAIN ${linkRows}`).collect()).at(-1)
+  assert.match(JSON.stringify(linkPlan), /idx_task_joined_workflow_id/)
+  // Past the cap on joining members the read takes links from only some of them, so a member can lose its joins; the
+  // read flags that. (The cap is lowered to 1 here: two members joined.)
+  const capped = joinedRunsQuery(1)
+  const cappedRead = (
+    await root.query(`LET $workflowId = 'big';${capped.statements.join(";")};RETURN {${capped.fields}};`).collect()
+  ).at(-1) as WorkflowRead
+  assert.deepEqual(
+    [cappedRead.joinedIds, cappedRead.membersCut],
+    [["a_run"], true],
+    "big_11000's joins fall outside the links read, and the read flags it",
+  )
+  await root.query("DELETE task WHERE workflow_id = 'big'; DELETE task:a_run;")
+  // Siblings that deduplicate against each other: one member joined 50 runs and more than MAX_EXPANDED_TASKS siblings
+  // that joined nothing. Only the first MAX_EXPANDED_TASKS joined ids are checked for members; the rest are never
+  // candidates (they'd take the runs' slots and count as runs), and the read flags that they weren't checked.
+  const runIds = Array.from({ length: 50 }, (_, index) => `a_run_${String(index).padStart(2, "0")}`)
+  const siblingIds = Array.from({ length: MAX_EXPANDED_TASKS + 50 }, (_, index) => `sib_${10000 + index}`)
+  await root.query(
+    `FOR $id IN $runIds { CREATE type::record('task', $id) SET state = 'SUCCESS', workflow_id = $id, last_updated = time::now(); };
+    FOR $id IN $siblingIds { CREATE type::record('task', $id) SET state = 'SUCCESS', workflow_id = 'sibs', last_updated = time::now(); };
+    CREATE task:sib_joiner SET state = 'SUCCESS', workflow_id = 'sibs', joined_tasks = array::concat($siblingIds, $runIds), last_updated = time::now();`,
+    { runIds, siblingIds },
+  )
+  const siblingsRead = buildRead({ operation: "task-workflow", taskId: "sib_joiner" })
+  for (const db of [root, scopedDatabase(root, { deny_fields: ["task.result.read"] })]) {
+    const siblings = await readWorkflow(db, siblingsRead)
+    assert.deepEqual(siblings.joinedIds, runIds, "every run is drawn; no unchecked sibling takes a slot")
+    assert.equal(siblings.joinedTotal, runIds.length, "unchecked siblings don't count as runs")
+    assert.equal(siblings.joinsUnchecked, true)
+    assert.deepEqual(
+      siblings.expanded.map((task) => String(task.id)).sort(),
+      runIds.map((id) => `task:${id}`),
+    )
+  }
+  await root.query("DELETE task WHERE workflow_id = 'sibs' OR string::starts_with(record::id(id), 'a_run_')")
+  // A joined run expands into its own subtree, by point reads along children and joined_tasks, never into the rest
+  // of its workflow. Shapes from Fyr: the hierarchy task also lists finalize, whose parent is the resource task.
+  await root.query(
+    `FOR $i IN 0..300 { CREATE type::record('task', 'noise_' + <string>$i) SET state = 'SUCCESS', workflow_id = 'nightly', parent_id = 'nightly_root', last_updated = time::now(); };
+    CREATE task:nightly_root SET state = 'SUCCESS', workflow_id = 'nightly', children = ['resource', 'noise_0', 'noise_1'], last_updated = time::now();
+    CREATE task:resource SET type = 'cache_by_resource', state = 'STARTED', workflow_id = 'nightly', parent_id = 'nightly_root', root_id = 'nightly_root', children = ['hierarchy', 'finalize'], result = 'resource-result', last_updated = time::now();
+    CREATE task:hierarchy SET type = 'cache_hierarchy', state = 'SUCCESS', workflow_id = 'nightly', parent_id = 'resource', children = ['finalize', 'metrics'], last_updated = time::now();
+    CREATE task:finalize SET type = 'finalize_resource_run', state = 'SUCCESS', workflow_id = 'nightly', parent_id = 'resource', children = ['fail', 'resource'], last_updated = time::now();
+    CREATE task:fail SET type = 'fail_resource_run', state = 'SUCCESS', workflow_id = 'nightly', parent_id = 'finalize', last_updated = time::now();
+    CREATE task:metrics SET type = 'metric_family', state = 'SUCCESS', workflow_id = 'nightly', parent_id = 'hierarchy', joined_tasks = ['nested_run', 'sample'], last_updated = time::now();
+    CREATE task:nested_run SET state = 'SUCCESS', workflow_id = 'nested', children = ['nested_child'], last_updated = time::now();
+    CREATE task:nested_child SET state = 'SUCCESS', workflow_id = 'nested', parent_id = 'nested_run', last_updated = time::now();
+    UPDATE task:sample SET joined_tasks = ['resource'];`,
+  )
+  const expandedIds = (read: WorkflowRead) => read.expanded.map((task) => String(task.id)).sort()
+  const subtree = await readWorkflow(root)
+  assert.deepEqual(subtree.joinedIds, ["resource"])
+  assert.deepEqual(expandedIds(subtree), [
+    "task:fail",
+    "task:finalize",
+    "task:hierarchy",
+    "task:metrics",
+    "task:nested_child",
+    "task:nested_run",
+    "task:resource",
+  ])
+  assert.equal(subtree.expansionCut, 0)
+  // The walk reports every id it reached, including ones with no row yet, so a later row refreshes the view.
+  await root.query("UPDATE task:fail SET children = ['fail_retry']")
+  assert((await readWorkflow(root)).walkedIds.includes("fail_retry"))
+  const restrictedSubtree = await readWorkflow(scopedDatabase(root, { deny_fields: ["task.result.read"] }))
+  assert.deepEqual(expandedIds(restrictedSubtree), expandedIds(subtree))
+  const rowScopedSubtree = await readWorkflow(
+    scopedDatabase(root, { task_ids: ["sample", "resource"], deny_fields: [] }),
+  )
+  assert.deepEqual([rowScopedSubtree.joinedIds, rowScopedSubtree.expanded], [[], []])
+  await root.query("DELETE task WHERE workflow_id IN ['nightly', 'nested']")
+  // A joined run's subtree holds the tasks whose parent_id names a task in it even when no children list names them
+  // (an imported backup's run.children can be empty). A children entry whose task names a parent outside the
+  // expansion is stale: that task and its subtree stay out. One that names a parent reached later goes under it.
+  await root.query(
+    `CREATE task:orphan_run SET state = 'SUCCESS', workflow_id = 'orphans', children = ['stale_child', 'orphan_grandchild'], last_updated = time::now();
+    CREATE task:orphan_child SET state = 'SUCCESS', workflow_id = 'orphans', parent_id = 'orphan_run', last_updated = time::now();
+    CREATE task:orphan_grandchild SET state = 'SUCCESS', workflow_id = 'orphans', parent_id = 'orphan_child', last_updated = time::now();
+    CREATE task:stale_child SET state = 'SUCCESS', workflow_id = 'elsewhere', parent_id = 'elsewhere_root', children = ['stale_grandchild'], last_updated = time::now();
+    CREATE task:stale_grandchild SET state = 'SUCCESS', workflow_id = 'elsewhere', parent_id = 'stale_child', last_updated = time::now();
+    UPDATE task:sample SET joined_tasks = ['orphan_run'];`,
+  )
+  for (const db of [root, scopedDatabase(root, { deny_fields: ["task.result.read"] })]) {
+    const orphans = await readWorkflow(db)
+    assert.deepEqual(expandedIds(orphans), ["task:orphan_child", "task:orphan_grandchild", "task:orphan_run"])
+    assert.equal(orphans.expansionCut, 0)
+    assert(!orphans.walkedIds.includes("stale_grandchild"), "a stale branch is not walked")
+  }
+  await root.query("DELETE task WHERE workflow_id IN ['orphans', 'elsewhere']")
+  // Expanded tasks carry only what their nodes need, never payloads: 200 tasks with 100 KiB results would
+  // otherwise make a 20 MiB response, over the 16 MiB observation limit.
+  await root.query(
+    `CREATE task:heavy SET state = 'SUCCESS', workflow_id = 'heavy', children = $heavyChildren, result = $payload, last_updated = time::now();
+    FOR $child IN $heavyChildren { CREATE type::record('task', $child) SET state = 'SUCCESS', workflow_id = $child, parent_id = 'heavy', result = $payload, args = $payload, last_updated = time::now(); };
+    UPDATE task:sample SET joined_tasks = ['heavy'];`,
+    {
+      heavyChildren: Array.from({ length: 200 }, (_, index) => `heavy_${index}`),
+      payload: "x".repeat(100 * 1024),
+    },
+  )
+  const heavy = await readWorkflow(root)
+  assert.equal(heavy.expanded.length, 201)
+  for (const task of heavy.expanded)
+    for (const field of ["result", "args", "kwargs", "exception", "traceback"])
+      assert.equal(task[field], undefined, `${field} is not read for an expanded task`)
+  assert(JSON.stringify(heavy).length < 1024 * 1024, "expanded runs stay far below the response limit")
+  await root.query("DELETE task WHERE string::starts_with(workflow_id, 'heavy')")
+  // Bounds: at most MAX_EXPANDED_TASKS reads, MAX_EXPANSION_DEPTH levels below the runs the workflow joined; the
+  // rest counts as cut.
+  // (The wide children get their own workflow ids: SurrealDB 3.3.0 inserts thousands of equal index values slowly.)
+  await root.query(
+    `CREATE task:wide SET state = 'STARTED', workflow_id = 'wide', children = $wideChildren, last_updated = time::now();
+    FOR $i IN 0..${MAX_EXPANDED_TASKS + 100} { CREATE type::record('task', 'wide_' + <string>$i) SET state = 'SUCCESS', workflow_id = 'wide_' + <string>$i, last_updated = time::now(); };
+    FOR $i IN 0..${MAX_EXPANSION_DEPTH + 2} { CREATE type::record('task', 'deep_' + <string>$i) SET state = 'SUCCESS', workflow_id = 'deep', children = ['deep_' + <string>($i + 1)], last_updated = time::now(); };
+    UPDATE task:sample SET joined_tasks = ['wide'];`,
+    { wideChildren: Array.from({ length: MAX_EXPANDED_TASKS + 100 }, (_, index) => `wide_${index}`) },
+  )
+  const wide = await readWorkflow(root)
+  assert.equal(wide.expanded.length, MAX_EXPANDED_TASKS)
+  assert.equal(wide.expansionCut, 101, "the root and the first wide children fit; the other 101 are cut")
+  await root.query("UPDATE task:sample SET joined_tasks = ['deep_0']")
+  const deep = await readWorkflow(root)
+  assert.equal(deep.expanded.length, MAX_EXPANSION_DEPTH + 1, "the joined run and MAX_EXPANSION_DEPTH levels below it")
+  assert.equal(deep.expansionCut, 1)
+  await root.query("DELETE task WHERE workflow_id = 'deep' OR string::starts_with(workflow_id, 'wide')")
+  await root.query("UPDATE task:sample SET joined_tasks = NONE")
   await root.query(
     "UPDATE task:sample SET args = 'private-input', kwargs = 'private-kwargs', exception = 'private-failure', traceback = 'private-traceback'; UPDATE worker:sample SET inspect = $inspect;",
     { inspect: JSON.stringify({ private: "private-worker" }) },

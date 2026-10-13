@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vitest"
 import { Authorization } from "./opa"
-import { emptyScope, intersectScopes, principalScope, readScopeSchema, scopeFingerprint } from "./read-scope"
+import {
+  emptyScope,
+  intersectScopes,
+  principalScope,
+  readScopeSchema,
+  type ReadScope,
+  scopeFingerprint,
+  scopedDatabase,
+} from "./read-scope"
 
 const principal = { account_id: "monitor", roles: ["administrator" as const] }
 const context = { method: "POST", path: "/api/observation/rpc", transport: "http" as const, operation: "list" }
@@ -62,5 +70,55 @@ describe("bounded OPA read scopes", () => {
     expect(await check({ allow: true, scope: { deny_fields: ["task.result.read"] } }, ["backup.export"])).toEqual({
       deny_fields: ["task.result.read"],
     })
+  })
+})
+
+describe("scoped point reads", () => {
+  const transformed = (scope: ReadScope, sql: string) => {
+    const query = vi.fn()
+    scopedDatabase({ query }, scope).query(sql, {})
+    return String(query.mock.calls[0][0])
+  }
+
+  it("projects a record lookup from the record itself instead of scanning the table", () => {
+    for (const scope of [
+      { deny_fields: ["task.result.read" as const] },
+      { task_ids: ["a"], worker_hostnames: ["w"], deny_fields: [] },
+    ])
+      for (const table of ["task", "worker", "workflow", "event"]) {
+        const sql = transformed(scope, `SELECT * FROM type::record('${table}', $parent.id) TIMEOUT 2s`)
+        expect(sql).toMatch(
+          new RegExp(`^SELECT \\* FROM \\(SELECT .+ FROM type::record\\('${table}', \\$parent\\.id\\)[ )]`),
+        )
+        expect(sql).not.toMatch(new RegExp(`FROM ${table}\\b`))
+        expect(sql).not.toContain("WHERE id =")
+      }
+  })
+
+  it("keeps a children lookup's parent_id filter on the table, and finds nothing under a task scope", () => {
+    const lookup = "SELECT VALUE record::id(id) FROM task WHERE parent_id IN $parents1 LIMIT 5 TIMEOUT 2s"
+    const payloadOnly = transformed({ deny_fields: ["task.result.read"] }, lookup)
+    expect(payloadOnly).toMatch(
+      /^SELECT VALUE record::id\(id\) FROM \(SELECT .+ FROM task WHERE parent_id IN \$parents1\) LIMIT 5 TIMEOUT 2s$/,
+    )
+    expect(payloadOnly).not.toContain("result,")
+    expect(transformed({ task_ids: ["a"], deny_fields: [] }, lookup)).toContain("FROM task WHERE false) LIMIT 5")
+    // Any other filter stays outside the projection.
+    expect(
+      transformed({ deny_fields: ["task.result.read"] }, "SELECT * FROM task WHERE parent_id IN $p AND x"),
+    ).toMatch(/FROM \(SELECT .+ FROM task WHERE true\) WHERE parent_id IN \$p AND x$/)
+  })
+
+  it("keeps the source's row filters on a record lookup", () => {
+    const scope = { task_ids: ["a"], worker_hostnames: ["w"], deny_fields: [] }
+    expect(transformed(scope, "SELECT * FROM type::record('task', $id)")).toContain(
+      "FROM type::record('task', $id) WHERE record::id(id) IN $__scope_task_ids)",
+    )
+    expect(transformed(scope, "SELECT * FROM type::record('worker', $id)")).toContain(
+      "FROM type::record('worker', $id) WHERE record::id(id) IN $__scope_worker_hostnames)",
+    )
+    expect(transformed(scope, "SELECT * FROM type::record('event', $id)")).toContain(
+      "FROM type::record('event', $id) WHERE task_id IN (SELECT VALUE record::id(id) FROM task WHERE",
+    )
   })
 })
