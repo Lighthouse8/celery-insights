@@ -38,7 +38,9 @@ async def _seed(url: str, mode: str) -> None:
     async with AsyncSurreal(url) as connection:
         await connection.signin({"username": "root", "password": "root"})
         await connection.use("test", "export_search")
-        await connection.query("DEFINE TABLE IF NOT EXISTS search_config SCHEMALESS")
+        await connection.query(
+            "DEFINE TABLE IF NOT EXISTS search_config SCHEMALESS; DEFINE TABLE IF NOT EXISTS task_join SCHEMALESS"
+        )
         for task in FIXTURES["tasks"]:
             content = {key: value for key, value in task.items() if key not in {"id", "format"}}
             await connection.query(

@@ -79,40 +79,51 @@ export function scopedDatabase(db: Pick<Surreal, "query">, scope: ReadScope): Pi
   }
   const taskWhere = taskConditions.length ? taskConditions.join(" AND ") : "true"
   const taskMetadata =
-    "id,type,state,sent_at,received_at,started_at,execution_active,execution_observed_at,execution_active_at,succeeded_at,failed_at,retried_at,revoked_at,rejected_at,runtime,last_updated,last_updated_observed,first_observed_at,had_error,eta,expires,retries,exchange,routing_key,worker"
+    "id,type,state,sent_at,received_at,started_at,last_started_at,execution_active,execution_observed_at,execution_active_at,succeeded_at,failed_at,retried_at,revoked_at,rejected_at,runtime,last_updated,last_updated_observed,first_observed_at,had_error,eta,expires,retries,highest_retries,exchange,routing_key,worker"
   const taskFields = [
     taskMetadata,
+    // Progress counts are metadata; descriptions (overall and per section) are text the task wrote, so they
+    // follow result access.
+    denied.has("task.result.read")
+      ? "IF progress THEN { current: progress.current, total: progress.total, attempt: progress.attempt, updated_at: progress.updated_at, sections: IF progress.sections THEN progress.sections.map(|$section| { current: $section.current, total: $section.total }) ELSE NONE END } ELSE NONE END AS progress"
+      : "progress",
     `${JSON.stringify(scope.deny_fields)} AS restricted_fields`,
     `${taskScoped(scope)} AS relationships_restricted`,
-    ...(!taskScoped(scope) ? ["root_id,parent_id,workflow_id,children"] : ["[] AS children"]),
+    ...(!taskScoped(scope)
+      ? ["root_id,parent_id,workflow_id,children,joined_tasks,joined_workflow_id"]
+      : ["[] AS children"]),
     ...(!denied.has("task.input.read") ? ["args,kwargs"] : []),
     ...(!denied.has("task.result.read") ? ["result,result_truncated"] : []),
     ...(!denied.has("task.failure.read") ? ["exception,traceback"] : []),
   ].join(",")
   bindings.__scope_worker_hostnames = scope.worker_hostnames ?? []
-  const sources: Record<string, string> = {
-    task: `(SELECT ${taskFields} FROM task WHERE ${taskWhere})`,
+  // Each source projects and filters rows of `from`: the table itself, a search result set, or one record.
+  const sources: Record<string, (from: string) => string> = {
+    task: (from) => `(SELECT ${taskFields} FROM ${from} WHERE ${taskWhere})`,
     // Omit cross-task workflow summaries entirely when task visibility is constrained.
-    workflow: `(SELECT id,root_task_id,root_task_type,aggregate_state,first_seen_at,last_updated,task_count,completed_count,failure_count,retry_count,active_count,worker_count${denied.has("task.failure.read") ? "" : ",latest_exception_preview"} FROM workflow WHERE ${taskScoped(scope) ? "false" : "true"})`,
-    workflow_task: `(SELECT * FROM workflow_task WHERE ${taskScoped(scope) ? "false" : "true"})`,
-    worker: `(SELECT id,hostname,pid,software_identity,software_version,software_sys,last_updated,heartbeat_expires,cpu_load,status,missed_polls${restricted(scope) ? ',["worker.inspect.read"] AS restricted_fields' : ""}${!rowScoped(scope) ? ",active_tasks,processed_tasks" : ""}${!denied.has("worker.inspect.read") && !restricted(scope) ? ",inspect" : ""} FROM worker${scope.worker_hostnames !== undefined ? " WHERE record::id(id) IN $__scope_worker_hostnames" : ""})`,
-    event: `(SELECT ${!restricted(scope) && !denied.has("event.raw.read") ? "*" : "id,event_type,task_id,timestamp,hostname"} FROM event${taskScoped(scope) ? ` WHERE task_id IN (SELECT VALUE record::id(id) FROM task WHERE ${taskWhere})` : ""})`,
+    workflow: (from) =>
+      `(SELECT id,root_task_id,root_task_type,aggregate_state,first_seen_at,last_updated,task_count,completed_count,failure_count,retry_count,active_count,worker_count${denied.has("task.failure.read") ? "" : ",latest_exception_preview"} FROM ${from} WHERE ${taskScoped(scope) ? "false" : "true"})`,
+    workflow_task: (from) => `(SELECT * FROM ${from} WHERE ${taskScoped(scope) ? "false" : "true"})`,
+    worker: (from) =>
+      `(SELECT id,hostname,pid,software_identity,software_version,software_sys,last_updated,heartbeat_expires,cpu_load,status,missed_polls${restricted(scope) ? ',["worker.inspect.read"] AS restricted_fields' : ""}${!rowScoped(scope) ? ",active_tasks,processed_tasks" : ""}${!denied.has("worker.inspect.read") && !restricted(scope) ? ",inspect" : ""} FROM ${from}${scope.worker_hostnames !== undefined ? " WHERE record::id(id) IN $__scope_worker_hostnames" : ""})`,
+    event: (from) =>
+      `(SELECT ${!restricted(scope) && !denied.has("event.raw.read") ? "*" : "id,event_type,task_id,timestamp,hostname"} FROM ${from}${taskScoped(scope) ? ` WHERE task_id IN (SELECT VALUE record::id(id) FROM task WHERE ${taskWhere})` : ""})`,
   }
+  const searchSources: Record<string, string> = { $searchTasks: "task", $searchWorkflowRows: "workflow" }
   return {
     query: ((sql: string, parameters: Record<string, unknown> = {}) => {
       if (typeof sql !== "string" || Object.keys(parameters).some((key) => key.startsWith("__scope_")))
         throw new AuthError(403, "Invalid observation operation")
       // Exact source replacement in trusted application queries, not a user SQL parser.
       const transformed = sql.replace(
-        /\bFROM\s+(type::record\('(task|worker|workflow|event)',\s*(\$[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\)|\$searchTasks\b|\$searchWorkflowRows\b|workflow_task\b|workflow\b|worker\b|event\b|task\b)/g,
-        (_match, source: string, table?: string, id?: string) =>
-          table
-            ? `FROM (SELECT * FROM ${sources[table]} WHERE id = type::record('${table}', ${id}))`
-            : source === "$searchTasks"
-              ? `FROM ${sources.task.replace("FROM task", "FROM $searchTasks")}`
-              : source === "$searchWorkflowRows"
-                ? `FROM ${sources.workflow.replace("FROM workflow", "FROM $searchWorkflowRows")}`
-                : `FROM ${sources[source]}`,
+        /\bFROM\s+(type::record\('(task|worker|workflow|event)',\s*\$[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\)|task\s+WHERE\s+parent_id\s+IN\s+(\$[A-Za-z_][A-Za-z0-9_]*)(?=\s+(?:LIMIT|TIMEOUT)\b)|\$searchTasks\b|\$searchWorkflowRows\b|workflow_task\b|workflow\b|worker\b|event\b|task\b)/g,
+        // A point read projects the record itself, so it never scans the table. A children lookup keeps its
+        // parent_id filter on the table, where the index serves it; under a task scope relationships are hidden, so
+        // it finds nothing, as filtering the projection would.
+        (_match, source: string, table?: string, parentIds?: string) =>
+          parentIds
+            ? `FROM (SELECT ${taskFields} FROM task WHERE ${taskScoped(scope) ? "false" : `parent_id IN ${parentIds}`})`
+            : `FROM ${sources[table ?? searchSources[source] ?? source](source)}`,
       )
       return db.query(transformed, { ...parameters, ...bindings })
     }) as Surreal["query"],

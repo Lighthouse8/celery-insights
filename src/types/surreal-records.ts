@@ -13,6 +13,18 @@ export enum TaskState {
   IGNORED = "IGNORED",
 }
 
+/** Latest progress a task reported with a `task-progress` event */
+export interface SurrealTaskProgress {
+  current: number
+  total?: number | null
+  description?: string | null
+  updated_at: string
+  /** The task's retry count when it reported, if the task sent it. */
+  attempt?: number | null
+  /** Nested loops behind the overall position, outermost first. */
+  sections?: Array<{ description?: string | null; current: number; total?: number | null }> | null
+}
+
 /** Task record as stored in SurrealDB */
 export interface SurrealTask {
   relationships_restricted?: boolean
@@ -44,11 +56,17 @@ export interface SurrealTask {
   workflow_id?: string | null
   parent_id?: string | null
   children: string[]
+  /** Active runs this task joined instead of sending its own (task-joined events) */
+  joined_tasks?: string[] | null
   worker?: string | null
   result?: string | null
   result_truncated?: boolean
   exception?: string | null
   traceback?: string | null
+  progress?: SurrealTaskProgress | null
+  last_started_at?: string | null
+  /** Highest retry count seen; `retries` is the latest applied one. Missing on rows stored before it existed. */
+  highest_retries?: number | null
 }
 
 export interface SurrealWorkflow {
@@ -199,6 +217,20 @@ export const parseWorkerInspect = (worker: SurrealWorker | null): WorkerInspectD
 
 const isoToDate = (iso: string | null | undefined): Date | undefined => (iso ? new Date(iso) : undefined)
 
+export interface TaskProgressSection {
+  current: number
+  total?: number
+  description?: string
+}
+
+export interface TaskProgress {
+  current: number
+  total?: number
+  description?: string
+  updated_at?: Date
+  sections: TaskProgressSection[]
+}
+
 /** Parsed task — same shape as SurrealTask but with extracted id and Date timestamps */
 export interface Task {
   relationships_restricted?: boolean
@@ -230,11 +262,13 @@ export interface Task {
   workflow_id?: string
   parent_id?: string
   children: string[]
+  joined_tasks?: string[]
   worker?: string
   result?: string
   result_truncated?: boolean
   exception?: string
   traceback?: string
+  progress?: TaskProgress
 }
 
 export interface Workflow {
@@ -284,11 +318,30 @@ export const parseTask = (raw: SurrealTask): Task => ({
   workflow_id: raw.workflow_id || raw.root_id || extractId(raw.id),
   parent_id: raw.parent_id || undefined,
   children: raw.children,
+  joined_tasks: raw.joined_tasks || undefined,
   worker: raw.worker || undefined,
   result: raw.result || undefined,
   result_truncated: raw.result_truncated,
   exception: raw.exception || undefined,
   traceback: raw.traceback || undefined,
+  // A report from an attempt below the highest retry count seen belongs to a failed attempt. The ingester
+  // applies the same rule when storing reports and on new attempts (server/events/ingester.py); change them
+  // together.
+  progress:
+    raw.progress &&
+    !(typeof raw.progress.attempt === "number" && raw.progress.attempt < (raw.highest_retries ?? raw.retries ?? 0))
+      ? {
+          current: raw.progress.current,
+          total: raw.progress.total ?? undefined,
+          description: raw.progress.description || undefined,
+          updated_at: isoToDate(raw.progress.updated_at),
+          sections: (raw.progress.sections ?? []).map((section) => ({
+            current: section.current,
+            total: section.total ?? undefined,
+            description: section.description || undefined,
+          })),
+        }
+      : undefined,
 })
 
 export const parseWorkflow = (raw: SurrealWorkflow): Workflow => ({

@@ -47,4 +47,9 @@ describe("TaskExecutionPanel", () => {
     render(<TaskExecutionPanel task={startedTask({ execution_active: true, execution_observed_at: now })} />)
     expect(screen.getByText("Runtime:").nextElementSibling).toHaveTextContent("1min, 0.0s")
   })
+
+  it("leaves progress to its own panel", () => {
+    render(<TaskExecutionPanel task={startedTask({ progress: { current: 3, total: 10, sections: [] } })} />)
+    expect(screen.queryByText(/progress/i)).toBeNull()
+  })
 })

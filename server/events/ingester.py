@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import random
 import re
 from collections.abc import Awaitable, Callable
@@ -10,6 +11,20 @@ from tasks.task_search import kwargs_search_terms
 from surrealdb_client import get_db
 
 logger = logging.getLogger(__name__)
+
+# Custom event a task sends with ``self.send_event("task-progress", current=..., total=..., description=...)``.
+PROGRESS_EVENT_TYPE = "task-progress"
+PROGRESS_DESCRIPTION_MAX_LENGTH = 200
+# Larger numbers lose precision in SurrealDB and JavaScript, and math.isfinite overflows on huge ints.
+PROGRESS_MAX_NUMBER = 2**53
+# Custom event a task sends with ``self.send_event("task-joined", task_ids=[...])`` when it joins an
+# already active run instead of sending its own.
+JOINED_EVENT_TYPE = "task-joined"
+JOINED_TASKS_MAX = 100
+# Matches the longest task id the read API accepts.
+JOINED_TASK_ID_MAX_LENGTH = 256
+# Nested loops a task reports beside its overall position; more are dropped.
+PROGRESS_MAX_SECTIONS = 10
 
 TERMINAL_EVENT_TYPES = frozenset({"task-succeeded", "task-failed", "task-revoked", "task-rejected"})
 TERMINAL_TASK_STATES = ("SUCCESS", "FAILURE", "REVOKED", "REJECTED", "IGNORED")
@@ -231,7 +246,21 @@ class SurrealDBIngester:
                 event_type = event.get("type", "")
                 category = event_type.split("-", 1)[0] if "-" in event_type else ""
 
-                if category == "task":
+                if event_type == PROGRESS_EVENT_TYPE:
+                    # Progress never changes state or workflow membership, so it skips the summary recompute.
+                    q, p = build_task_progress_update(event, i)
+                    if q:
+                        event_queries.append(q)
+                        event_params.update(p)
+
+                elif event_type == JOINED_EVENT_TYPE:
+                    # A join never changes state or workflow membership, so it skips the summary recompute.
+                    q, p = build_task_joined_update(event, i)
+                    if q:
+                        event_queries.append(q)
+                        event_params.update(p)
+
+                elif category == "task":
                     q, p = build_task_upsert(event, i, search_indexing_enabled=self.search_indexing_enabled)
                     if q:
                         event_queries.append(q)
@@ -397,10 +426,45 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
         f" THEN ${p}_workflow_id ELSE ${p}_previous.workflow_id ?? ${p}_workflow_id END"
         if event.get("root_id")
         else f"workflow_id = ${p}_previous.workflow_id ?? ${p}_workflow_id",
+        # Joins reported before the task had a record (see build_task_joined_update).
+        f"joined_tasks = IF ${p}_joins THEN array::slice(array::union(${p}_previous.joined_tasks ?? [], ${p}_joins),"
+        f" 0, {JOINED_TASKS_MAX}) ELSE ${p}_previous.joined_tasks END",
     ]
 
     if event_type == "task-failed" or event.get("exception") or event.get("traceback"):
         set_clauses.append("had_error = true")
+
+    # highest_retries is the highest retry count seen, for progress ordering only: a retry's task-received can come
+    # from a worker whose clock is behind, so retries (the latest applied count) can lag. Rows stored before
+    # highest_retries existed fall back to retries.
+    event_retries = event.get("retries")
+    has_retries = isinstance(event_retries, int) and not isinstance(event_retries, bool)
+    highest_retries = f"${p}_previous.highest_retries ?? ${p}_previous.retries ?? 0"
+    if has_retries:
+        highest_retries = f"math::max([{highest_retries}, ${p}_retries])"
+        set_clauses.append(f"highest_retries = {highest_retries}")
+
+    if event_type in ("task-retried", "task-started"):
+        # A retry starts from zero, so both events drop progress reported before them. task-retried
+        # comes from the failed attempt's own worker, whose clock orders that attempt's reports even
+        # when the next attempt's worker clock runs behind. Reports that carry their attempt are
+        # ordered by it instead: they are dropped once highest_retries passes their attempt, and a delayed
+        # retry event can't clear the next attempt's progress. build_task_progress_update and parseTask
+        # apply the same "attempt below highest_retries is stale" rule.
+        set_clauses.append(
+            f"progress = IF (${p}_previous.progress.attempt IS NONE"
+            f" AND ${p}_previous.progress.updated_at < <datetime>${p}_ts)"
+            f" OR (${p}_previous.progress.attempt != NONE AND ${p}_previous.progress.attempt < ({highest_retries}))"
+            f" THEN NONE ELSE ${p}_previous.progress END"
+        )
+    if event_type == "task-started":
+        # started_at keeps the first attempt's start; the latest one, on the new attempt's own clock,
+        # rejects late reports from an earlier attempt without rejecting this attempt's.
+        set_clauses.append(
+            f"last_started_at = IF ${p}_previous.last_started_at IS NONE"
+            f" OR <datetime>${p}_ts > ${p}_previous.last_started_at"
+            f" THEN <datetime>${p}_ts ELSE ${p}_previous.last_started_at END"
+        )
 
     # Fields follow an applied state even when it is older than an observed last_updated; `>=` lets
     # an event with the same timestamp still fill them.
@@ -435,7 +499,9 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
     query = (
         f"LET ${p}_previous = (SELECT * FROM {target})[0] ?? {{}}; "
         f"LET ${p}_apply = {apply_state}; "
-        f"UPSERT {target} SET {assignments}"
+        f"LET ${p}_joins = (SELECT VALUE ids FROM type::record('task_join', ${p}_id))[0]; "
+        f"UPSERT {target} SET {assignments}; "
+        f"IF ${p}_joins {{ DELETE type::record('task_join', ${p}_id); }}"
     )
     if search_indexing_enabled and event.get("kwargs") is not None:
         terms = kwargs_search_terms(str(event["kwargs"]), "saferepr")
@@ -455,6 +521,127 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
             f" WHERE ${p}_previous.workflow_id != NONE AND ${p}_previous.workflow_id != ${p}_workflow_id"
             f" AND (SELECT VALUE id FROM task WHERE workflow_id = ${p}_previous.workflow_id LIMIT 1) = []"
         )
+    return query, params
+
+
+def _progress_number(value: object) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value if 0 <= value <= PROGRESS_MAX_NUMBER else None
+
+
+def _progress_sections(value: object) -> list[dict]:
+    """Keep the usable sections of a report: a list of {description, current, total} objects."""
+    if not isinstance(value, list):
+        return []
+    sections = []
+    for section in value[:PROGRESS_MAX_SECTIONS]:
+        if not isinstance(section, dict):
+            continue
+        current = _progress_number(section.get("current"))
+        if current is None:
+            continue
+        kept: dict = {"current": current}
+        if total := _progress_number(section.get("total")):
+            kept["total"] = total
+        if (description := section.get("description")) is not None:
+            kept["description"] = str(description)[:PROGRESS_DESCRIPTION_MAX_LENGTH]
+        sections.append(kept)
+    return sections
+
+
+def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
+    """Build an UPDATE that records a task's latest reported progress.
+
+    UPDATE never creates a record, so progress for a task Celery Insights has not seen is dropped
+    instead of failing the batch on the schema's required task fields.
+    """
+    task_id = event.get("uuid")
+    timestamp = event.get("timestamp")
+    current = _progress_number(event.get("current"))
+    # An unusable total (zero, negative, not a number) drops only the total, not the report.
+    total = _progress_number(event.get("total")) or None
+
+    if not task_id or not timestamp or current is None:
+        return "", {}
+
+    p = f"pg{idx}"
+    params: dict = {f"{p}_id": task_id, f"{p}_ts": _epoch_to_iso(timestamp), f"{p}_current": current}
+    fields = [f"current: ${p}_current", f"updated_at: <datetime>${p}_ts"]
+    if total is not None:
+        params[f"{p}_total"] = total
+        fields.append(f"total: ${p}_total")
+    description = event.get("description")
+    if description is not None:
+        params[f"{p}_description"] = str(description)[:PROGRESS_DESCRIPTION_MAX_LENGTH]
+        fields.append(f"description: ${p}_description")
+    if sections := _progress_sections(event.get("sections")):
+        params[f"{p}_sections"] = sections
+        fields.append(f"sections: ${p}_sections")
+
+    attempt = event.get("attempt")
+    if isinstance(attempt, int) and not isinstance(attempt, bool) and 0 <= attempt <= PROGRESS_MAX_NUMBER:
+        # The attempt (the task's retry count) orders reports across workers whose clocks
+        # disagree: a later attempt always wins, time only orders reports within one attempt,
+        # and a report from an attempt below the highest retry count seen (highest_retries, or retries on rows
+        # stored before it existed) is ignored. The same "attempt below highest_retries is stale" rule clears
+        # progress in build_task_upsert and hides it in parseTask (src/types/surreal-records.ts); change all
+        # three together.
+        params[f"{p}_attempt"] = attempt
+        fields.append(f"attempt: ${p}_attempt")
+        accept = (
+            f"${p}_attempt >= (highest_retries ?? retries ?? 0) AND (progress.attempt IS NONE"
+            f" OR ${p}_attempt > progress.attempt"
+            f" OR (${p}_attempt = progress.attempt AND <datetime>${p}_ts >= progress.updated_at))"
+        )
+    else:
+        # Without an attempt, worker timestamps decide, which assumes the workers' clocks agree.
+        # A tagged report is never replaced by an untagged one, so the outcome doesn't depend
+        # on which of the two arrives first.
+        accept = (
+            f"progress.attempt IS NONE"
+            f" AND (progress.updated_at IS NONE OR <datetime>${p}_ts >= progress.updated_at)"
+            f" AND (last_started_at IS NONE OR <datetime>${p}_ts >= last_started_at)"
+        )
+
+    query = (
+        f"UPDATE type::record('task', ${p}_id) SET progress = "
+        f"IF {accept} THEN {{ {', '.join(fields)} }} ELSE progress END"
+    )
+    return query, params
+
+
+def build_task_joined_update(event: dict, idx: int) -> tuple[str, dict]:
+    """Build the writes that add the runs a task joined to its record.
+
+    Task.send_event publishes from the pool child while the worker buffers the task's own lifecycle events, so a
+    join can arrive before the joining task has a record. UPDATE never creates one (the schema requires task fields
+    a join doesn't carry), so such a join is kept in ``task_join`` until build_task_upsert moves it onto the task.
+    """
+    task_id = event.get("uuid")
+    reported = event.get("task_ids")
+    if not task_id or not isinstance(reported, list):
+        return "", {}
+    valid = (
+        joined_id
+        for joined_id in reported
+        if isinstance(joined_id, str) and 0 < len(joined_id) <= JOINED_TASK_ID_MAX_LENGTH and joined_id != task_id
+    )
+    joined = list(dict.fromkeys(valid))[:JOINED_TASKS_MAX]
+    if not joined:
+        return "", {}
+
+    p = f"jn{idx}"
+    params = {f"{p}_id": task_id, f"{p}_ids": joined}
+    query = (
+        f"UPDATE type::record('task', ${p}_id) SET "
+        f"joined_tasks = array::slice(array::union(joined_tasks ?? [], ${p}_ids), 0, {JOINED_TASKS_MAX}); "
+        f"IF (SELECT VALUE id FROM type::record('task', ${p}_id)) = [] {{ "
+        f"UPSERT type::record('task_join', ${p}_id) SET "
+        f"ids = array::slice(array::union(ids ?? [], ${p}_ids), 0, {JOINED_TASKS_MAX}); }}"
+    )
     return query, params
 
 

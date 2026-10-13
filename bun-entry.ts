@@ -671,6 +671,8 @@ const server = Bun.serve({
             theme: runtimeConfig.uiTheme,
             hideWelcomeBanner: runtimeConfig.uiHideWelcomeBanner,
             rawEventsLimit: runtimeConfig.uiRawEventsLimit,
+            taskNodeLabels: runtimeConfig.uiTaskNodeLabels,
+            taskNodeFields: runtimeConfig.uiTaskNodeFields,
           },
           observationPath: `${runtimeConfig.urlPrefix}/api/observation/rpc`,
           taskVisibilityRestricted: Boolean(scope && taskScoped(scope)),

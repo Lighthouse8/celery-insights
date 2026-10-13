@@ -186,7 +186,7 @@ export class ObservationApi {
     if (pathname === "/api/settings/clear" && request.method === "POST") {
       if (replay) throw new HttpError(403, "Snapshot is read-only")
       await this.db.query(
-        "BEGIN TRANSACTION; DELETE event; DELETE workflow_task; DELETE task; DELETE workflow; DELETE worker; COMMIT TRANSACTION;",
+        "BEGIN TRANSACTION; DELETE event; DELETE workflow_task; DELETE task; DELETE task_join; DELETE workflow; DELETE worker; COMMIT TRANSACTION;",
       )
       return Response.json(true)
     }
@@ -226,6 +226,7 @@ export class ObservationApi {
       "DELETE event",
       "DELETE workflow_task",
       "DELETE task",
+      "DELETE task_join",
       "DELETE workflow",
       "DELETE worker",
     ]
@@ -252,18 +253,25 @@ export class ObservationApi {
                 "rejected_at",
                 "last_updated",
                 "first_observed_at",
+                "last_started_at",
+                "progress.updated_at",
                 "execution_observed_at",
                 "execution_active_at",
               ]
             : table === "event"
               ? ["timestamp"]
               : ["last_updated"]
-        for (const field of dateFields) {
-          if (typeof content[field] === "string") {
-            const date = new Date(content[field])
+        for (const path of dateFields) {
+          const [field, nested] = path.split(".", 2)
+          const parent = nested === undefined ? content : content[field]
+          if (!parent || typeof parent !== "object") continue
+          const holder = parent as Record<string, unknown>
+          const key = nested ?? field
+          if (typeof holder[key] === "string") {
+            const date = new Date(holder[key])
             if (!Number.isFinite(date.valueOf()))
               return Response.json({ success: false, error: "Invalid backup timestamp" })
-            content[field] = date
+            holder[key] = date
           }
         }
         bindings[`${table}_${index}_id`] = idString(id)
@@ -316,6 +324,8 @@ export class ObservationApi {
         { workflow_ids },
       )
     }
+    // A join whose task never got a record (its lifecycle events were lost) is never claimed.
+    await this.db.query("DELETE task_join WHERE created_at < time::now() - 1d")
     if (this.retention.dead_worker_retention_hours !== null && this.retention.dead_worker_retention_hours !== undefined)
       await this.db.query("DELETE worker WHERE status = 'offline' AND last_updated < time::now() - $hours * 1h;", {
         hours: this.retention.dead_worker_retention_hours,
