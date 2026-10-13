@@ -65,8 +65,9 @@ const MAX_REPR_LENGTH = 8_192
 
 // Where each quoted string may close. JSON and repr escape every quote inside double quotes. Celery's saferepr
 // writes backslashes raw and escapes only ', so in single quotes `\'` is either an escaped quote or a string
-// ending in a backslash ('C:\'): every `\'` up to the first bare quote is a candidate.
-const closeCandidates = (text: string, start: number): number[] => {
+// ending in a backslash ('C:\'): every `\'` up to the first bare quote is a candidate. In cut text with no bare
+// quote after the start, the string may also close past the cut, read as running to the end.
+const closeCandidates = (text: string, start: number, cut: boolean): number[] => {
   if (text[start] === '"') {
     for (let index = start + 1; index < text.length; index++)
       if (text[index] === "\\") index++
@@ -77,8 +78,9 @@ const closeCandidates = (text: string, start: number): number[] => {
   for (let index = start + 1; index < text.length; index++) {
     if (text[index] !== "'") continue
     candidates.push(index + 1)
-    if (text[index - 1] !== "\\") break
+    if (text[index - 1] !== "\\") return candidates
   }
+  if (cut && candidates.at(-1) !== text.length) candidates.push(text.length)
   return candidates
 }
 
@@ -98,10 +100,11 @@ const opaqueClose = (text: string, start: number): string | undefined => {
 const DELIMITED = /\s*(?:[,:)\]}]|$)/y
 
 /**
- * Picks each quoted string's end the way the search matcher does: a candidate after which the rest of the text
- * still splits into quoted strings, opaque values and plain characters without a backslash. A delimiter must
- * follow it, and a reading that splits without an opaque value wins. Text no reading splits takes the first
- * candidate.
+ * Where each quoted string ends, or -1 when its end is ambiguous. A candidate close qualifies when a delimiter
+ * (or the end) follows it and the rest of the text splits into quoted strings, opaque values and plain characters
+ * without a backslash outside a string, under one of two readings: bytes and `<…>` as opaque values, or as plain
+ * text. The real close always qualifies, so exactly one qualifying candidate is the end. With several, saferepr could have
+ * written the text from different arguments; with none, the text isn't saferepr's, and any pick is a guess.
  */
 const quotedStrings = (text: string, cut: boolean) => {
   // splits[index]: the text from index on splits; clean[index]: it splits with bytes read as plain strings and <
@@ -158,30 +161,27 @@ const quotedStrings = (text: string, cut: boolean) => {
     const opaqueEnd = opaqueClose(text, start) && (tables ??= fillTables()).opaqueEnds[start]
     if (opaqueEnd) return opaqueEnd
     if (text[start] === "<") return start + 1
-    const candidates = closeCandidates(text, start)
+    const candidates = closeCandidates(text, start, cut)
     // Without a backslash every string has one end.
     if (candidates.length < 2) return candidates[0] ?? text.length
     const { splits, clean } = (tables ??= fillTables())
-    // A real close is followed by a delimiter or the end. Opaque values let junk after a wrong close split too
-    // (`'\'a\', b'` and `'C:\', ', b'` read `b'` as bytes), so a delimited clean candidate goes first. Without one,
-    // the last delimited candidate: every candidate before it is a `\'`, which may be an escaped quote.
     const delimited = (end: number) => ((DELIMITED.lastIndex = end), DELIMITED.test(text))
-    return (
-      candidates.find((end) => clean[end] && delimited(end)) ??
-      candidates.filter((end) => splits[end] && delimited(end)).pop() ??
-      candidates.find((end) => splits[end]) ??
-      candidates[0]
-    )
+    const qualifying = candidates.filter((end) => (clean[end] || splits[end]) && delimited(end))
+    return qualifying.length === 1 ? qualifying[0] : -1
   }
 }
 
-// Where a container item ends: a top-level comma, the container's close, or (for a dict key) a colon.
+// Where a container item ends: a top-level comma, the container's close, or (for a dict key) a colon. -1 when a
+// string in it has an ambiguous end.
 const itemEnd = (text: string, start: number, isKey: boolean, quotedEnd: (start: number) => number): number => {
   let depth = 0
   for (let index = start; index < text.length; index++) {
     const character = text[index]
-    if (character === "'" || character === '"' || character === "<") index = quotedEnd(index) - 1
-    else if ("([{".includes(character)) depth++
+    if (character === "'" || character === '"' || character === "<") {
+      const end = quotedEnd(index)
+      if (end < 0) return -1
+      index = end - 1
+    } else if ("([{".includes(character)) depth++
     else if (")]}".includes(character)) {
       if (!depth) return index
       depth--
@@ -220,6 +220,8 @@ export const reprItems = (fullText: string | undefined): Map<string, string> => 
       index = keyEnd + 1
     }
     const end = itemEnd(text, index, false, quotedEnd)
+    // An ambiguous item hides where every later item starts, so it ends the read like a cut.
+    if (end < 0) break
     const raw = text.slice(index, end).trim()
     // Nothing before the close: an empty container (`[ ]`) or a trailing comma (`(7, )`).
     // An item that runs to the cut may continue past it.

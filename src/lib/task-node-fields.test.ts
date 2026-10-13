@@ -130,21 +130,46 @@ describe("reprItems", () => {
         ["id", "1"],
       ]),
     )
-    // saferepr of {'note': "'a', b", 'id': 1}: the \' before the comma also splits when the b' after it reads as
-    // bytes, but the real close splits and a delimiter follows it too.
-    expect(reprItems("{'note': '\\'a\\', b', 'id': 1}")).toEqual(
+  })
+
+  it("reads no labels from an item whose string has more than one possible end", () => {
+    // saferepr writes {'note': "a', b", 'blob': b"it's", 'id': 1} and {'note': 'a\\', b", 'blob": b"it's", 'id': 1}
+    // alike.
+    expect(reprItems("{'note': 'a\\', b', 'blob': b'it's', 'id': 1}")).toEqual(new Map())
+    // {'note': "'a', b", 'id': 1} or {'note': "'a", b", 'id": 1}.
+    expect(reprItems("{'note': '\\'a\\', b', 'id': 1}")).toEqual(new Map())
+    // ('C:\\', ', b', 'x') or ("C:', ", b", 'x").
+    expect(reprItems("('C:\\', ', b', 'x')")).toEqual(new Map())
+    // The items before the ambiguous one still read; the ambiguous one hides where the next starts.
+    expect(reprItems("{'id': 1, 'when': None, 'note': 'a\\', b', 'blob': b'it's', 'last': 2}")).toEqual(
       new Map([
-        ["note", "\\'a\\', b"],
         ["id", "1"],
+        ["when", "None"],
       ]),
     )
-    // saferepr of ('C:\\', ', b', 'x'): the opening quote of ', b' also splits, through a b' that reads as bytes,
-    // but only the real close splits without an opaque value.
-    expect(reprItems("('C:\\', ', b', 'x')")).toEqual(
+    expect(reprItems("{'id': 1, 'lanes': [{'path': 'C:\\', ', b', 'x'}], 'last': 2}")).toEqual(new Map([["id", "1"]]))
+  })
+
+  it("labels common Fyr kwargs in full", () => {
+    expect(
+      reprItems(
+        "{'organization_id': 42, 'resource_id': 345, 'channel': 'facebook_ads', " +
+          "'run_id': '441e0722-bdb2-443e-aa7d-f282e8e4eae1', 'currency_code': 'NOK', 'end': None, " +
+          "'skip_assets': True, 'start': datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc), " +
+          "'name': \"O'Brien Ads\", 'options': {'metrics': ['spend', 'clicks'], 'depth': 2, 'filter': {'a': None}}}",
+      ),
+    ).toEqual(
       new Map([
-        ["0", "C:\\"],
-        ["1", ", b"],
-        ["2", "x"],
+        ["organization_id", "42"],
+        ["resource_id", "345"],
+        ["channel", "facebook_ads"],
+        ["run_id", "441e0722-bdb2-443e-aa7d-f282e8e4eae1"],
+        ["currency_code", "NOK"],
+        ["end", "None"],
+        ["skip_assets", "True"],
+        ["start", "datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)"],
+        ["name", "O'Brien Ads"],
+        ["options", "{'metrics': ['spend', 'clicks'], 'depth': 2, 'filter': {'a': None}}"],
       ]),
     )
   })
@@ -216,6 +241,11 @@ describe("reprItems", () => {
       read = rest.length
     }
     expect(read).toBe(uncut.length)
+
+    // Cut after `\', 9`, the note may close at that \' or past the cut, so it gets no label.
+    const note = `{'id': 1, 'note': '${"x".repeat(8_192 - 24)}\\', 9zzz', 'last': 2}`
+    expect(note.slice(8_187, 8_192)).toBe("\\', 9")
+    expect(reprItems(note)).toEqual(new Map([["id", "1"]]))
   })
 })
 
