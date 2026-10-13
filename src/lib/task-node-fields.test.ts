@@ -246,6 +246,12 @@ describe("reprItems", () => {
     const note = `{'id': 1, 'note': '${"x".repeat(8_192 - 24)}\\', 9zzz', 'last': 2}`
     expect(note.slice(8_187, 8_192)).toBe("\\', 9")
     expect(reprItems(note)).toEqual(new Map([["id", "1"]]))
+
+    // A string crossing the cut whose only quote before it is a \' gets no label either.
+    for (const crossing of [`'it\\'s "x", more${"y".repeat(9_000)}'`, `'a\\', b${"z".repeat(9_000)}'`])
+      expect(reprItems(`{'id': 1, 'note': ${crossing}}`)).toEqual(new Map([["id", "1"]]))
+    // A cut that makes both readings of an escaped close split is ambiguous.
+    expect(reprItems(`{'id': 1, 'note': 'a\\', b', 'pad': '${"x".repeat(9_000)}'}`)).toEqual(new Map([["id", "1"]]))
   })
 })
 
