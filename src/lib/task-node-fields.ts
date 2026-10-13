@@ -87,7 +87,7 @@ const closeCandidates = (text: string, start: number, cut: boolean): number[] =>
 // saferepr writes bytes (b'it's') and custom reprs (<Opaque it's>) as they are, quotes unescaped. Like search's
 // lenient pattern, such a value after a delimiter runs to the first close that a delimiter (or the end) follows, as
 // long as the rest of the text splits from there and no value of the same kind opens before it; otherwise its end is
-// ambiguous. In cut text with no such close it runs past the cut. Returns that close when start opens such a value.
+// ambiguous. In open text with no such close it runs past the end. Returns that close when start opens such a value.
 const opaqueClose = (text: string, start: number): string | undefined => {
   const character = text[start]
   const bytes = (character === "'" || character === '"') && text[start - 1] === "b"
@@ -104,12 +104,13 @@ const DELIMITED = /\s*(?:[,:)\]}]|$)/y
  * Where each quoted string ends, or -1 when its end is ambiguous. A candidate close qualifies when a delimiter
  * (or the end) follows it and the rest of the text splits into quoted strings, opaque values and plain characters
  * without a backslash outside a string, under one of two readings: bytes and `<…>` as opaque values running to any
- * close a delimiter follows, or as plain text. In saferepr's text the real close qualifies whenever every later bytes
- * or `<…>` value follows a delimiter and closes before any cut, so exactly one qualifying candidate is the end. With
- * several, saferepr could have written the text from different arguments; with none, the text isn't saferepr's (or
- * is one of those exceptions), and any pick is a guess.
+ * close a delimiter follows, or as plain text. Open text (cut here, or ending in Celery's truncation marker) may stop
+ * inside a value, so a string or opaque value with no close there splits, running past the end. In saferepr's text
+ * the real close then qualifies whenever every later bytes or `<…>` value follows a delimiter, so exactly one
+ * qualifying candidate is the end. With several, saferepr could have written the text from different arguments; with
+ * none, the text isn't saferepr's (or is one of those exceptions), and any pick is a guess.
  */
-const quotedStrings = (text: string, cut: boolean) => {
+const quotedStrings = (text: string, cut: boolean, open: boolean) => {
   // splits[index]: the text from index on splits; clean[index]: it splits with bytes read as plain strings and <
   // as a plain character; opaqueEnds[index]: where an opaque value opened there ends, or -1 when that's ambiguous.
   // One right-to-left pass fills all three, so a reading looks up the readings
@@ -123,9 +124,9 @@ const quotedStrings = (text: string, cut: boolean) => {
     // Where a double-quoted string read from index closes, outside an escape.
     const doubleClose: number[] = []
     // Whether a single-quoted string opened before the nearest ' has a candidate end from there on that splits
-    // (cleanly). In cut text a string may close past the cut.
-    let singleSplits = cut
-    let singleClean = cut
+    // (cleanly). In open text a string may close past the end.
+    let singleSplits = open
+    let singleClean = open
     // After index: the nearest non-space character, where the nearest close of each kind that a delimiter follows
     // ends, whether any such close leaves text that splits, and where the nearest opaque value of each kind opens.
     let solid = text.length
@@ -147,14 +148,14 @@ const quotedStrings = (text: string, cut: boolean) => {
         singleClean = clean[index + 1] || (escaped && singleClean)
       } else if (character === '"') {
         const end = doubleClose[index + 1]
-        splits[index] = end === undefined ? cut : splits[end + 1]
-        clean[index] = end === undefined ? cut : clean[end + 1]
+        splits[index] = end === undefined ? open : splits[end + 1]
+        clean[index] = end === undefined ? open : clean[end + 1]
       } else {
         // saferepr only writes a backslash inside a string, so one outside every string rejects the reading.
         splits[index] = character !== "\\" && splits[index + 1]
         clean[index] = character !== "\\" && clean[index + 1]
       }
-      if (close && opaqueEnd === undefined && cut) {
+      if (close && opaqueEnd === undefined && open) {
         splits[index] = true
         opaqueEnds[index] = text.length
       } else if (close && opaqueEnd !== undefined) {
@@ -225,17 +226,26 @@ export const reprItems = (fullText: string | undefined): Map<string, string> => 
   const text = cut ? fullText!.slice(0, MAX_REPR_LENGTH) : fullText
   const start = text?.search(/\S/) ?? -1
   if (!text || start < 0 || !"{[(".includes(text[start])) return items
-  const quoted = quotedStrings(text, cut)
+  // Celery's truncation ends the text in `...`, then at most `, ...` and closing brackets.
+  const open = cut || /\.\.\.(?:, \.\.\.)?[\s)\]}]*$/.test(text)
+  const quoted = quotedStrings(text, cut, open)
   // Bytes and <…> values end at a guessed close. When the text after them breaks the container's grammar, the guess
   // was wrong somewhere, so the labels from the first item with such a value on are dropped.
   let opaque = false
+  // Whether a value in the item has no close before the end of open text.
+  let runsOn = false
   let guessedFrom: number | undefined
   let wellFormed = true
-  const quotedEnd = (index: number) => ((opaque ||= opaqueClose(text, index) !== undefined), quoted(index))
+  const quotedEnd = (index: number) => {
+    opaque ||= opaqueClose(text, index) !== undefined
+    const end = quoted(index)
+    runsOn ||= open && end === text.length
+    return end
+  }
   const isDictionary = text[start] === "{"
   let index = start + 1
   for (let position = 0; index < text.length && !")]}".includes(text[index]); position++) {
-    opaque = false
+    opaque = runsOn = false
     let key = String(position)
     if (isDictionary) {
       const keyEnd = itemEnd(text, index, true, quotedEnd)
@@ -253,8 +263,8 @@ export const reprItems = (fullText: string | undefined): Map<string, string> => 
     if (end < 0) break
     const raw = text.slice(index, end).trim()
     // Nothing before the close: an empty container (`[ ]`) or a trailing comma (`(7, )`).
-    // An item that runs to the cut may continue past it.
-    if (!raw || raw === "..." || (cut && end === text.length)) break
+    // An item that runs to the cut, or a value that runs past Celery's marker, may continue past the text.
+    if (!raw || raw === "..." || (cut && end === text.length) || runsOn) break
     if (opaque) guessedFrom ??= items.size
     if (!items.has(key)) items.set(key, displayValue(raw))
     index = text[end] === "," ? end + 1 : end

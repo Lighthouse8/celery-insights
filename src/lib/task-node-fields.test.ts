@@ -177,7 +177,7 @@ describe("reprItems", () => {
         "{'organization_id': 42, 'resource_id': 345, 'channel': 'facebook_ads', " +
           "'run_id': '441e0722-bdb2-443e-aa7d-f282e8e4eae1', 'currency_code': 'NOK', 'end': None, " +
           "'skip_assets': True, 'start': datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc), " +
-          "'name': \"O'Brien Ads\", 'options': {'metrics': ['spend', 'clicks'], 'depth': 2, 'filter': {'a': None}}}",
+          "'name': 'O\\'Brien Ads', 'options': {'metrics': ['spend', 'clicks'], 'depth': 2, 'filter': {'a': None}}}",
       ),
     ).toEqual(
       new Map([
@@ -189,7 +189,7 @@ describe("reprItems", () => {
         ["end", "None"],
         ["skip_assets", "True"],
         ["start", "datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)"],
-        ["name", "O'Brien Ads"],
+        ["name", "O\\'Brien Ads"],
         ["options", "{'metrics': ['spend', 'clicks'], 'depth': 2, 'filter': {'a': None}}"],
       ]),
     )
@@ -221,6 +221,25 @@ describe("reprItems", () => {
       new Map([
         ["channel", "fb"],
         ["lanes", "yyy..."],
+      ]),
+    )
+    // A value cut inside its quotes or <…> runs past the marker: it gets no label, the items before it keep theirs.
+    const truncated = [...reprItems(fixtureKwargs("truncated"))]
+    expect(truncated.map(([key]) => key)).toEqual(["organization_id", "pad"])
+    expect(reprItems("{'org': 12, 'blob': b'q', 'ref': UUID('0000...")).toEqual(
+      new Map([
+        ["org", "12"],
+        ["blob", "b'q'"],
+      ]),
+    )
+    expect(reprItems("{'name': 'O\\'Brien Ads', 'ref': UUID('0000...")).toEqual(new Map([["name", "O\\'Brien Ads"]]))
+    expect(reprItems("{'id': 1, 'a': <Foo 1, 2...")).toEqual(new Map([["id", "1"]]))
+    expect(reprItems("(<Foo 1, 2...")).toEqual(new Map())
+    // A bare < is still a plain character.
+    expect(reprItems("(1 < 2, 'yyy...', ...)")).toEqual(
+      new Map([
+        ["0", "1 < 2"],
+        ["1", "yyy..."],
       ]),
     )
   })
