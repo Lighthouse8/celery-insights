@@ -142,6 +142,7 @@ const TaskPage = () => {
     joinedTotal,
     expansionCut,
     membersCut,
+    joinsUnchecked,
     isLoading,
     error,
   } = useTaskWorkflow(taskId)
@@ -156,8 +157,9 @@ const TaskPage = () => {
       walked: walkedIds,
       cut: expansionCut,
       membersCut,
+      joinsUnchecked,
     }),
-    [expanded, joinedIds, walkedIds, joinedTotal, expansionCut, membersCut],
+    [expanded, joinedIds, walkedIds, joinedTotal, expansionCut, membersCut, joinsUnchecked],
   )
   const [chartType, setChartType] = React.useState<WorkflowChartType>(WorkflowChartType.FLOWCHART)
   useTourChangeStepOnLoad(2, task !== undefined)

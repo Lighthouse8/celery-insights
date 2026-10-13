@@ -22,7 +22,13 @@ describe("joinedRunsQuery", () => {
     expect(statement("seen0")).toBe(`LET $seen0 = array::slice($joinedCandidates,0,${MAX_JOINED_RUNS})`)
     expect(statement("linked")).toContain("$links.task_id")
     expect(statement("memberJoins")).toContain(") TIMEOUT 2s)[0] = $workflowId)")
-    expect(statement("joinedCandidates")).toBe("LET $joinedCandidates = array::complement($linked,$memberJoins)")
+  })
+
+  it("chooses only from the MAX_EXPANDED_TASKS joined ids it checked for members, and flags more", () => {
+    expect(statement("checked")).toBe(`LET $checked = array::slice($linked,0,${MAX_EXPANDED_TASKS})`)
+    expect(statement("memberJoins")).toMatch(/^LET \$memberJoins = array::filter\(\$checked,/)
+    expect(statement("joinedCandidates")).toBe("LET $joinedCandidates = array::complement($checked,$memberJoins)")
+    expect(fields).toContain(`joinsUnchecked:array::len($linked) > ${MAX_EXPANDED_TASKS}`)
   })
 
   it("walks children, joined runs and children by parent_id level by level, skipping seen tasks and members", () => {

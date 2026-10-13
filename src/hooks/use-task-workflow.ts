@@ -13,12 +13,14 @@ interface TaskWorkflowSnapshot {
   joinedIds: string[]
   /** Every task id the read's walk reached, loaded or not: the chosen runs and what it expanded. */
   walkedIds: string[]
-  /** Every joined run id, before the MAX_JOINED_RUNS cap. */
+  /** Every joined run id the read checked, before the MAX_JOINED_RUNS cap. */
   joinedTotal: number
   /** Links out of the expanded tasks the read's bounds left unexpanded. */
   expansionCut: number
   /** The workflow has more members than the read took joins from (see JoinedRuns). */
   membersCut: boolean
+  /** Joined ids past those the read checked for members aren't counted (see JoinedRuns). */
+  joinsUnchecked: boolean
   task: SurrealTask | null
   workflow: SurrealWorkflow | null
 }
@@ -45,6 +47,7 @@ const EMPTY_RESULT: TaskWorkflowSnapshot = {
   joinedTotal: 0,
   expansionCut: 0,
   membersCut: false,
+  joinsUnchecked: false,
 }
 
 export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
@@ -73,6 +76,7 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
           joinedTotal?: number
           expansionCut?: number
           membersCut?: boolean
+          joinsUnchecked?: boolean
           task?: SurrealTask | null
           workflow?: SurrealWorkflow | null
         }>
@@ -100,6 +104,7 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         joinedTotal: result?.joinedTotal ?? 0,
         expansionCut: result?.expansionCut ?? 0,
         membersCut: result?.membersCut ?? false,
+        joinsUnchecked: result?.joinsUnchecked ?? false,
       }
       workflowIdRef.current = next.task?.workflow_id || next.task?.root_id || next.task?.id?.toString() || taskId
       // Every id the walk reached, not only the records it found: a run or task with no row yet must refresh when it

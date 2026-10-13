@@ -268,6 +268,7 @@ try {
     walkedIds: string[]
     joinedTotal: number
     membersCut: boolean
+    joinsUnchecked: boolean
   }
   const workflowRead = buildRead({ operation: "task-workflow", taskId: "sample" })
   const readWorkflow = async (db: Pick<Surreal, "query">, read = workflowRead) =>
@@ -333,6 +334,29 @@ try {
     "big_11000's joins fall outside the links read, and the read flags it",
   )
   await root.query("DELETE task WHERE workflow_id = 'big'; DELETE task:a_run;")
+  // Siblings that deduplicate against each other: one member joined 50 runs and more than MAX_EXPANDED_TASKS siblings
+  // that joined nothing. Only the first MAX_EXPANDED_TASKS joined ids are checked for members; the rest are never
+  // candidates (they'd take the runs' slots and count as runs), and the read flags that they weren't checked.
+  const runIds = Array.from({ length: 50 }, (_, index) => `a_run_${String(index).padStart(2, "0")}`)
+  const siblingIds = Array.from({ length: MAX_EXPANDED_TASKS + 50 }, (_, index) => `sib_${10000 + index}`)
+  await root.query(
+    `FOR $id IN $runIds { CREATE type::record('task', $id) SET state = 'SUCCESS', workflow_id = $id, last_updated = time::now(); };
+    FOR $id IN $siblingIds { CREATE type::record('task', $id) SET state = 'SUCCESS', workflow_id = 'sibs', last_updated = time::now(); };
+    CREATE task:sib_joiner SET state = 'SUCCESS', workflow_id = 'sibs', joined_tasks = array::concat($siblingIds, $runIds), last_updated = time::now();`,
+    { runIds, siblingIds },
+  )
+  const siblingsRead = buildRead({ operation: "task-workflow", taskId: "sib_joiner" })
+  for (const db of [root, scopedDatabase(root, { deny_fields: ["task.result.read"] })]) {
+    const siblings = await readWorkflow(db, siblingsRead)
+    assert.deepEqual(siblings.joinedIds, runIds, "every run is drawn; no unchecked sibling takes a slot")
+    assert.equal(siblings.joinedTotal, runIds.length, "unchecked siblings don't count as runs")
+    assert.equal(siblings.joinsUnchecked, true)
+    assert.deepEqual(
+      siblings.expanded.map((task) => String(task.id)).sort(),
+      runIds.map((id) => `task:${id}`),
+    )
+  }
+  await root.query("DELETE task WHERE workflow_id = 'sibs' OR string::starts_with(record::id(id), 'a_run_')")
   // A joined run expands into its own subtree, by point reads along children and joined_tasks, never into the rest
   // of its workflow. Shapes from Fyr: the hierarchy task also lists finalize, whose parent is the resource task.
   await root.query(
