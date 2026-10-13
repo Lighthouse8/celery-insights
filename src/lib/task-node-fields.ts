@@ -98,27 +98,32 @@ const DELIMITED = /\s*(?:[,:)\]}]|$)/y
 
 /**
  * Picks each quoted string's end the way the search matcher does: a candidate after which the rest of the text
- * still splits into quoted strings, opaque values and plain characters without a backslash, preferring the last
- * one a delimiter follows, then the first that splits. Text no reading splits takes the first candidate.
+ * still splits into quoted strings, opaque values and plain characters without a backslash. A delimiter must
+ * follow it, and a reading that splits without an opaque value wins. Text no reading splits takes the first
+ * candidate.
  */
 const quotedStrings = (text: string) => {
-  // splits[index]: the text from index on splits; opaqueEnds[index]: where an opaque value opened there ends. One
-  // right-to-left pass fills both, so a reading looks up the readings after it rather than recursing through
-  // every later string (a stack frame each), and it tracks closeCandidates' ends as it goes rather than
-  // rescanning them per quote (quadratic on a run of `\'`).
-  let tables: { splits: boolean[]; opaqueEnds: number[] } | undefined
+  // splits[index]: the text from index on splits; clean[index]: it splits with bytes read as plain strings and <
+  // as a plain character; opaqueEnds[index]: where an opaque value opened there ends. One right-to-left pass fills
+  // all three, so a reading looks up the readings after it rather than recursing through every later string (a
+  // stack frame each), and it tracks closeCandidates' ends as it goes rather than rescanning them per quote
+  // (quadratic on a run of `\'`).
+  let tables: { splits: boolean[]; clean: boolean[]; opaqueEnds: number[] } | undefined
   const fillTables = () => {
     const splits: boolean[] = []
+    const clean: boolean[] = []
     const opaqueEnds: number[] = []
     // Where a double-quoted string read from index closes, outside an escape.
     const doubleClose: number[] = []
-    // Whether a single-quoted string opened before the nearest ' has a candidate end from there on that splits.
+    // Whether a single-quoted string opened before the nearest ' has a candidate end from there on that splits
+    // (cleanly).
     let singleSplits = false
+    let singleClean = false
     // After index: the nearest non-space character, and where the nearest close of each kind that a delimiter
     // follows ends.
     let solid = text.length
     const delimitedEnds: Record<string, number | undefined> = {}
-    splits[text.length] = true
+    splits[text.length] = clean[text.length] = true
     for (let index = text.length - 1; index >= 0; index--) {
       const character = text[index]
       const close = opaqueClose(text, index)
@@ -127,22 +132,26 @@ const quotedStrings = (text: string) => {
       doubleClose[index] =
         character === '"' ? index : character === "\\" ? doubleClose[index + 2] : doubleClose[index + 1]
       if (character === "'") {
-        splits[index] = opaqueEnd !== undefined ? splits[opaqueEnd] : singleSplits
-        singleSplits = splits[index + 1] || (text[index - 1] === "\\" && singleSplits)
-      } else if (opaqueEnd !== undefined) {
-        splits[index] = splits[opaqueEnd]
+        splits[index] = singleSplits
+        clean[index] = singleClean
+        const escaped = text[index - 1] === "\\"
+        singleSplits = splits[index + 1] || (escaped && singleSplits)
+        singleClean = clean[index + 1] || (escaped && singleClean)
       } else if (character === '"') {
         const end = doubleClose[index + 1]
         splits[index] = end !== undefined && splits[end + 1]
+        clean[index] = end !== undefined && clean[end + 1]
       } else {
         // saferepr only writes a backslash inside a string, so one outside every string rejects the reading.
         splits[index] = character !== "\\" && splits[index + 1]
+        clean[index] = character !== "\\" && clean[index + 1]
       }
+      if (opaqueEnd !== undefined) splits[index] = splits[opaqueEnd]
       if ("'\">".includes(character) && (solid === text.length || ",:)]}".includes(text[solid])))
         delimitedEnds[character] = index + 1
       if (!/\s/.test(character)) solid = index
     }
-    return { splits, opaqueEnds }
+    return { splits, clean, opaqueEnds }
   }
   return (start: number): number => {
     const opaqueEnd = opaqueClose(text, start) && (tables ??= fillTables()).opaqueEnds[start]
@@ -151,12 +160,13 @@ const quotedStrings = (text: string) => {
     const candidates = closeCandidates(text, start)
     // Without a backslash every string has one end.
     if (candidates.length < 2) return candidates[0] ?? text.length
-    const { splits } = (tables ??= fillTables())
-    // A real close is followed by a delimiter or the end. Opaque values let junk after a `\'` split too (`'\'a\', b'`
-    // reads `b'` as bytes), so a delimited candidate goes first, and the last one: every candidate before it is a
-    // `\'`, which may be an escaped quote.
+    const { splits, clean } = (tables ??= fillTables())
+    // A real close is followed by a delimiter or the end. Opaque values let junk after a wrong close split too
+    // (`'\'a\', b'` and `'C:\', ', b'` read `b'` as bytes), so a delimited clean candidate goes first. Without one,
+    // the last delimited candidate: every candidate before it is a `\'`, which may be an escaped quote.
     const delimited = (end: number) => ((DELIMITED.lastIndex = end), DELIMITED.test(text))
     return (
+      candidates.find((end) => clean[end] && delimited(end)) ??
       candidates.filter((end) => splits[end] && delimited(end)).pop() ??
       candidates.find((end) => splits[end]) ??
       candidates[0]

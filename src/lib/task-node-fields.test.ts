@@ -138,6 +138,15 @@ describe("reprItems", () => {
         ["id", "1"],
       ]),
     )
+    // saferepr of ('C:\\', ', b', 'x'): the opening quote of ', b' also splits, through a b' that reads as bytes,
+    // but only the real close splits without an opaque value.
+    expect(reprItems("('C:\\', ', b', 'x')")).toEqual(
+      new Map([
+        ["0", "C:\\"],
+        ["1", ", b"],
+        ["2", "x"],
+      ]),
+    )
   })
 
   it("splits thousands of strings after a \\' without a stack frame per string", () => {
