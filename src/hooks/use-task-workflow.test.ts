@@ -10,6 +10,9 @@ vi.mock("@components/surrealdb-provider", () => ({
   useSurrealDB: () => ({ db: mockDb, status: "connected" }),
 }))
 
+// Past the coalesce window for changes that touch only tasks of joined runs.
+const EXPANDED_WINDOW = 2100
+
 const snapshotCalls = () => mockQuery.mock.calls.filter(([query]) => String(query).includes("LET $task")).length
 
 describe("useTaskWorkflow", () => {
@@ -88,7 +91,7 @@ describe("useTaskWorkflow", () => {
 
     act(() => emit({ value: { id: "task:other", workflow_id: "other" } }))
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000)
+      await vi.advanceTimersByTimeAsync(EXPANDED_WINDOW)
     })
     expect(snapshotCalls()).toBe(2)
   })
@@ -117,7 +120,7 @@ describe("useTaskWorkflow", () => {
 
     act(() => emit({ value: { id: "task:later", workflow_id: "other" } }))
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000)
+      await vi.advanceTimersByTimeAsync(EXPANDED_WINDOW)
     })
     expect(snapshotCalls()).toBe(2)
   })
@@ -149,7 +152,7 @@ describe("useTaskWorkflow", () => {
 
     act(() => emit({ value: { id: "task:other-child", workflow_id: "other", parent_id: "other" } }))
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000)
+      await vi.advanceTimersByTimeAsync(EXPANDED_WINDOW)
     })
     expect(snapshotCalls()).toBe(2)
   })
@@ -181,7 +184,7 @@ describe("useTaskWorkflow", () => {
     for (const [index, id] of ["later-child", "later-join"].entries()) {
       act(() => emit({ value: { id: `task:${id}`, workflow_id: "other" } }))
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(1000)
+        await vi.advanceTimersByTimeAsync(EXPANDED_WINDOW)
       })
       expect(snapshotCalls()).toBe(index + 2)
     }
@@ -227,5 +230,49 @@ describe("useTaskWorkflow", () => {
     await act(async () => pending[1]([null, null, { task: { id: "task:other" }, workflow: null, members: [] }]))
     expect(result.current.task?.id).toBe("task:other")
     expect(result.current.isLoading).toBe(false)
+  })
+
+  it("waits longer for changes that touch only joined-run tasks, but not once the workflow itself changes", async () => {
+    mockQuery.mockImplementation(async (query: string) =>
+      query.startsWith("LIVE")
+        ? ["live-uuid"]
+        : [
+            null,
+            null,
+            {
+              task: { id: "task:root", workflow_id: "root", joined_tasks: ["other"] },
+              workflow: null,
+              members: [{ id: "task:root", workflow_id: "root", joined_tasks: ["other"] }],
+              expanded: [{ id: "task:other", workflow_id: "other" }],
+              joinedIds: ["other"],
+              walkedIds: ["other"],
+              joinedTotal: 1,
+            },
+          ],
+    )
+    renderHook(() => useTaskWorkflow("root"))
+    await waitFor(() => expect(mockLiveOf).toHaveBeenCalled())
+
+    act(() => emit({ value: { id: "task:other", workflow_id: "other" } }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(snapshotCalls()).toBe(1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(EXPANDED_WINDOW - 1000)
+    })
+    expect(snapshotCalls()).toBe(2)
+
+    // A member change while a joined-run refresh waits refreshes at the member pace.
+    act(() => emit({ value: { id: "task:other", workflow_id: "other" } }))
+    act(() => emit({ value: { id: "task:member", workflow_id: "root" } }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300)
+    })
+    expect(snapshotCalls()).toBe(3)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(EXPANDED_WINDOW)
+    })
+    expect(snapshotCalls()).toBe(3)
   })
 })

@@ -426,6 +426,9 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
         f" THEN ${p}_workflow_id ELSE ${p}_previous.workflow_id ?? ${p}_workflow_id END"
         if event.get("root_id")
         else f"workflow_id = ${p}_previous.workflow_id ?? ${p}_workflow_id",
+        # Joins reported before the task had a record (see build_task_joined_update).
+        f"joined_tasks = IF ${p}_joins THEN array::slice(array::union(${p}_previous.joined_tasks ?? [], ${p}_joins),"
+        f" 0, {JOINED_TASKS_MAX}) ELSE ${p}_previous.joined_tasks END",
     ]
 
     if event_type == "task-failed" or event.get("exception") or event.get("traceback"):
@@ -497,7 +500,9 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
     query = (
         f"LET ${p}_previous = (SELECT * FROM {target})[0] ?? {{}}; "
         f"LET ${p}_apply = {apply_state}; "
-        f"UPSERT {target} SET {assignments}"
+        f"LET ${p}_joins = (SELECT VALUE ids FROM type::record('task_join', ${p}_id))[0]; "
+        f"UPSERT {target} SET {assignments}; "
+        f"IF ${p}_joins {{ DELETE type::record('task_join', ${p}_id); }}"
     )
     if search_indexing_enabled and event.get("kwargs") is not None:
         terms = kwargs_search_terms(str(event["kwargs"]), "saferepr")
@@ -609,10 +614,11 @@ def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
 
 
 def build_task_joined_update(event: dict, idx: int) -> tuple[str, dict]:
-    """Build an UPDATE that adds the runs a task joined to its record.
+    """Build the writes that add the runs a task joined to its record.
 
-    UPDATE never creates a record, so a join reported by a task Celery Insights has not seen is dropped
-    instead of failing the batch on the schema's required task fields.
+    Task.send_event publishes from the pool child while the worker buffers the task's own lifecycle events, so a
+    join can arrive before the joining task has a record. UPDATE never creates one (the schema requires task fields
+    a join doesn't carry), so such a join is kept in ``task_join`` until build_task_upsert moves it onto the task.
     """
     task_id = event.get("uuid")
     reported = event.get("task_ids")
@@ -631,7 +637,10 @@ def build_task_joined_update(event: dict, idx: int) -> tuple[str, dict]:
     params = {f"{p}_id": task_id, f"{p}_ids": joined}
     query = (
         f"UPDATE type::record('task', ${p}_id) SET "
-        f"joined_tasks = array::slice(array::union(joined_tasks ?? [], ${p}_ids), 0, {JOINED_TASKS_MAX})"
+        f"joined_tasks = array::slice(array::union(joined_tasks ?? [], ${p}_ids), 0, {JOINED_TASKS_MAX}); "
+        f"IF (SELECT VALUE id FROM type::record('task', ${p}_id)) = [] {{ "
+        f"UPSERT type::record('task_join', ${p}_id) SET "
+        f"ids = array::slice(array::union(ids ?? [], ${p}_ids), 0, {JOINED_TASKS_MAX}); }}"
     )
     return query, params
 

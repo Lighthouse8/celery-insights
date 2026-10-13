@@ -249,12 +249,13 @@ export const getFlowGraph = (
     if (task) {
       joiners.push({ nodeId, task })
       const joined = joinedChildren(task, true)
-      // Like the workflow tree: children by parent_id, plus listed children whose parent wasn't expanded.
+      // Like the workflow tree: children by parent_id, plus listed children that name no parent. A listed child
+      // naming another parent is a stale entry, whether or not that parent was expanded.
       const children = [
         ...(expandedChildMap.get(taskId) ?? []),
         ...task.children.flatMap((childId) => {
           const child = expanded.get(childId)
-          return child && !(child.parent_id && expanded.has(child.parent_id)) ? [child] : []
+          return child && !child.parent_id ? [child] : []
         }),
       ].sort((a, b) => a.id.localeCompare(b.id))
       for (const child of children) {
@@ -321,6 +322,12 @@ export const getFlowGraph = (
         // A member is a dashed edge only; a run the read cut or never drew gets none (the note counts it).
         const target = visited.has(joinedId) ? joinedId : placed.has(joinedId) ? joinedNodeId(joinedId) : undefined
         if (!target) continue
+        // The edge into a run laid out under this joiner is always drawn (at most one per drawn run); only the
+        // other links count against the bound.
+        if (!visited.has(joinedId) && layoutParents.get(target) === nodeId) {
+          edges.push(createJoinedEdge(nodeId, target))
+          continue
+        }
         if (!edgeBudget) {
           hiddenJoinLinks++
           continue
@@ -414,7 +421,8 @@ export const hiddenJoinsNote = (runs: number, links: number, branches = 0, membe
   ].filter((part): part is string => !!part)
   const lines = [
     parts.length && `${listFormat.format(parts)} not shown`,
-    membersCut && `Joins from members beyond the first ${MAX_LINKING_MEMBERS.toLocaleString("en")} read aren't shown`,
+    membersCut &&
+      `Joins from members beyond the first ${MAX_LINKING_MEMBERS.toLocaleString("en")} that joined runs aren't shown`,
   ].filter((line): line is string => !!line)
   return lines.length ? lines.join("\n") : undefined
 }

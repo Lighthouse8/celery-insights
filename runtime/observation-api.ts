@@ -186,7 +186,7 @@ export class ObservationApi {
     if (pathname === "/api/settings/clear" && request.method === "POST") {
       if (replay) throw new HttpError(403, "Snapshot is read-only")
       await this.db.query(
-        "BEGIN TRANSACTION; DELETE event; DELETE workflow_task; DELETE task; DELETE workflow; DELETE worker; COMMIT TRANSACTION;",
+        "BEGIN TRANSACTION; DELETE event; DELETE workflow_task; DELETE task; DELETE task_join; DELETE workflow; DELETE worker; COMMIT TRANSACTION;",
       )
       return Response.json(true)
     }
@@ -226,6 +226,7 @@ export class ObservationApi {
       "DELETE event",
       "DELETE workflow_task",
       "DELETE task",
+      "DELETE task_join",
       "DELETE workflow",
       "DELETE worker",
     ]
@@ -323,6 +324,8 @@ export class ObservationApi {
         { workflow_ids },
       )
     }
+    // A join whose task never got a record (its lifecycle events were lost) is never claimed.
+    await this.db.query("DELETE task_join WHERE created_at < time::now() - 1d")
     if (this.retention.dead_worker_retention_hours !== null && this.retention.dead_worker_retention_hours !== undefined)
       await this.db.query("DELETE worker WHERE status = 'offline' AND last_updated < time::now() - $hours * 1h;", {
         hours: this.retention.dead_worker_retention_hours,

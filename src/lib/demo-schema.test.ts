@@ -59,6 +59,7 @@ describe("DEMO_SCHEMA", () => {
       "parent_id",
       "children",
       "joined_tasks",
+      "joined_workflow_id",
       "worker",
       "result",
       "result_truncated",
@@ -89,6 +90,9 @@ describe("DEMO_SCHEMA", () => {
     expect(DEMO_SCHEMA).toContain("DEFINE INDEX OVERWRITE idx_task_root_id ON task FIELDS root_id")
     expect(DEMO_SCHEMA).toContain("DEFINE INDEX OVERWRITE idx_task_workflow_id ON task FIELDS workflow_id")
     expect(DEMO_SCHEMA).toContain("DEFINE INDEX OVERWRITE idx_task_last_updated ON task FIELDS last_updated")
+    expect(DEMO_SCHEMA).toContain(
+      "DEFINE INDEX OVERWRITE idx_task_joined_workflow_id ON task FIELDS joined_workflow_id",
+    )
   })
 
   it("defines workflow indexes", () => {
