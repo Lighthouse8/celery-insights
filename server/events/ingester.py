@@ -418,19 +418,34 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
     if event_type == "task-failed" or event.get("exception") or event.get("traceback"):
         set_clauses.append("had_error = true")
 
-    # Retries only go up, and a retry's task-received can come from a worker whose clock is behind;
-    # progress ordering by attempt needs the latest count.
+    # Retries only go up within a run, and a retry's task-received can come from a worker whose clock is
+    # behind; progress ordering by attempt needs the latest count. An event dated before the current run
+    # started (run_started_at) is a late one from an earlier run of the same id and doesn't count.
     event_retries = event.get("retries")
+    has_retries = isinstance(event_retries, int) and not isinstance(event_retries, bool)
     retries = f"${p}_previous.retries ?? 0"
-    if isinstance(event_retries, int) and not isinstance(event_retries, bool):
-        retries = f"math::max([{retries}, ${p}_retries])"
+    if has_retries:
+        retries = (
+            f"(IF ${p}_previous.run_started_at != NONE AND <datetime>${p}_ts < ${p}_previous.run_started_at"
+            f" THEN {retries} ELSE math::max([{retries}, ${p}_retries]) END)"
+        )
 
     if event_type in ("task-sent", "task-received"):
-        # The same id sent again after it finished (apply_async(task_id=...)) is a new run: its retries
-        # start over, and the finished run's progress no longer applies.
-        new_run = f"${p}_apply AND ${p}_previous.state IN {TERMINAL_TASK_STATES_SQL}"
-        set_clauses.append(f"progress = IF {new_run} THEN NONE ELSE ${p}_previous.progress END")
-        if isinstance(event_retries, int) and not isinstance(event_retries, bool):
+        # A send or receive the stored run can't explain starts a new run of the same id: one after a
+        # finished run (apply_async(task_id=...)), or a receive with fewer retries, which a run never
+        # lowers (self.replace() keeps the id and starts from 0). Its retries and progress start over.
+        # Telling runs apart by $apply assumes worker clocks agree to within the gap between the runs.
+        new_run = f"${p}_apply AND (${p}_previous.state IN {TERMINAL_TASK_STATES_SQL}"
+        if event_type == "task-received" and has_retries:
+            new_run += f" OR ${p}_retries < ${p}_previous.retries"
+        new_run += ")"
+        set_clauses += [
+            f"progress = IF {new_run} THEN NONE ELSE ${p}_previous.progress END",
+            f"run_started_at = IF {new_run} THEN <datetime>${p}_ts ELSE ${p}_previous.run_started_at END",
+            # The poller matches a REVOKED result to this run's own task-revoked by revoked_at.
+            f"revoked_at = IF {new_run} THEN NONE ELSE ${p}_previous.revoked_at END",
+        ]
+        if has_retries:
             retries = f"IF {new_run} THEN ${p}_retries ELSE {retries} END"
 
     if event_type in ("task-retried", "task-started"):
@@ -438,7 +453,8 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
         # comes from the failed attempt's own worker, whose clock orders that attempt's reports even
         # when the next attempt's worker clock runs behind. Reports that carry their attempt are
         # ordered by it instead: they are dropped once retries passes their attempt, and a delayed
-        # retry event can't clear the next attempt's progress.
+        # retry event can't clear the next attempt's progress. build_task_progress_update and parseTask
+        # apply the same "attempt below retries is stale" rule.
         set_clauses.append(
             f"progress = IF (${p}_previous.progress.attempt IS NONE"
             f" AND ${p}_previous.progress.updated_at < <datetime>${p}_ts)"
@@ -462,7 +478,7 @@ def build_task_upsert(event: dict, idx: int, *, search_indexing_enabled: bool = 
         if value is not None:
             pname = f"{p}_{db_field}"
             params[pname] = value if isinstance(value, int | float) else str(value)
-            if db_field == "retries" and isinstance(value, int) and not isinstance(value, bool):
+            if db_field == "retries" and has_retries:
                 set_clauses.append(f"retries = {retries}")
                 continue
             # Result polling can observe a newer state before send/receive metadata arrives.
@@ -574,7 +590,9 @@ def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
     if isinstance(attempt, int) and not isinstance(attempt, bool) and 0 <= attempt <= PROGRESS_MAX_NUMBER:
         # The attempt (the task's retry count) orders reports across workers whose clocks
         # disagree: a later attempt always wins, time only orders reports within one attempt,
-        # and a report from an attempt before the task's current retries is ignored.
+        # and a report from an attempt before the task's current retries is ignored. The same
+        # "attempt below retries is stale" rule clears progress in build_task_upsert and hides it
+        # in parseTask (src/types/surreal-records.ts); change all three together.
         params[f"{p}_attempt"] = attempt
         fields.append(f"attempt: ${p}_attempt")
         accept = (
@@ -592,6 +610,8 @@ def build_task_progress_update(event: dict, idx: int) -> tuple[str, dict]:
             f" AND (last_started_at IS NONE OR <datetime>${p}_ts >= last_started_at)"
         )
 
+    # A report dated before the current run started is a late one from an earlier run of the same id.
+    accept = f"(run_started_at IS NONE OR <datetime>${p}_ts >= run_started_at) AND {accept}"
     query = (
         f"UPDATE type::record('task', ${p}_id) SET progress = "
         f"IF {accept} THEN {{ {', '.join(fields)} }} ELSE progress END"

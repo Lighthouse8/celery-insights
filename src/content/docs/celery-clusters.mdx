@@ -73,7 +73,8 @@ def import_rows(self, rows):
   - Without `attempt`, report timestamps decide the order, so worker clocks need to agree.
   - A tagged report always replaces an untagged one, so don't mix the two styles in one task.
   - A new attempt clears the previous attempt's progress. Celery's `task-retried` and `task-started` events don't carry the retry count, so a tagged report is cleared by the retry's `task-received`. If that event is lost, the failed attempt's last report stays until the new attempt sends its first one.
-  - Sending a finished task's id again (`apply_async(task_id=...)`) starts a new run: its retry count and progress start over.
+  - Sending a finished task's id again (`apply_async(task_id=...)`) starts a new run: its retry count and progress start over. So does `self.replace()` after the task has retried, since the replacement keeps the id and starts from 0 retries. Late events and reports from the earlier run are then ignored.
+  - Runs of the same id are told apart by event time, so this assumes worker clocks agree to within the gap between the runs. If the new run's worker clock is further behind, the new run keeps the earlier run's retry count and progress, and its tagged reports can be dropped.
   - A redelivered task (lost worker, expired visibility timeout) keeps the same retry count. Its reports are ordered by timestamp against the dead run's reports, so a replacement worker whose clock is behind can show the old count until its reports catch up.
 - `description` and section descriptions are text your task writes, so users without `task.result.read` see the counts but not the descriptions.
 - Progress for a task Celery Insights has not recorded yet is ignored, but the raw event stays visible on the Live Events page.

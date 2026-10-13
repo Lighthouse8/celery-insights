@@ -31,12 +31,15 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
   const [error, setError] = useState<Error | null>(null)
   const subscriptionRef = useRef<LiveSubscription | null>(null)
   const workflowIdRef = useRef<string | null>(null)
-  // Snapshot queries can resolve out of order; only the latest request may write.
+  // Snapshot queries can resolve out of order; a response writes only when it is newer than the last one
+  // written. Waiting for the newest request instead would drop every response while updates keep coming.
   const requestRef = useRef(0)
+  const appliedRef = useRef(0)
 
   const fetchSnapshot = useCallback(async () => {
     const request = ++requestRef.current
     if (!taskId) {
+      appliedRef.current = request
       setData(EMPTY_RESULT)
       setIsLoading(false)
       return
@@ -61,7 +64,8 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
                 };`,
         { taskId },
       )
-      if (request !== requestRef.current) return
+      if (request <= appliedRef.current) return
+      appliedRef.current = request
       const result = results.at(-1)
 
       const next = {
@@ -73,10 +77,11 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
       setData(next)
       setError(null)
     } catch (err) {
-      if (request !== requestRef.current) return
+      if (request <= appliedRef.current) return
+      appliedRef.current = request
       setError(err instanceof Error ? err : new Error(String(err)))
     } finally {
-      if (request === requestRef.current) setIsLoading(false)
+      if (request === appliedRef.current) setIsLoading(false)
     }
   }, [db, taskId])
 
@@ -120,6 +125,8 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
 
     return () => {
       cancelled = true
+      // Responses still in flight belong to the previous task id or connection.
+      appliedRef.current = requestRef.current
       clearTimeout(refreshTimer)
       unsubscribe?.()
       if (subscriptionRef.current) {

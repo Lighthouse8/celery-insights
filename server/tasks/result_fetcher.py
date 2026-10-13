@@ -84,13 +84,17 @@ def _build_task_meta_upsert(task_id: str, meta: dict, *, search_indexing_enabled
     }
 
     # A newer result over a finished run is the same id sent again. The same result read again (the
-    # poller forgets what it saw on restart) is still the same run. A revoke is the one terminal state
-    # Celery stores after its event (Request._announce_revoked), so its result is newer than its own
-    # task-revoked.
+    # poller forgets what it saw on restart) is still the same run. Celery stores SUCCESS and FAILURE
+    # before sending their events (the tracer's mark_as_done/handle_failure, or Request.on_timeout and
+    # on_failure, before on_success/on_failure send the event), so those results are never newer than
+    # their own event. REVOKED is stored after its event
+    # (Request._announce_revoked): a REVOKED result is that event's own while the revoke is still the
+    # last write (last_updated = revoked_at, which a new run clears); after that it's another run.
     new_run = (
         f"$meta_apply_state AND $meta_previous.state IN {TERMINAL_TASK_STATES_SQL} "
         "AND $meta_timestamp != $meta_previous.last_updated "
-        "AND !($meta_previous.state = 'REVOKED' AND $state = 'REVOKED')"
+        "AND !($meta_previous.state = 'REVOKED' AND $state = 'REVOKED' "
+        "AND $meta_previous.last_updated = $meta_previous.revoked_at)"
     )
     set_clauses = [
         "state = IF $meta_apply_state THEN $state ELSE $meta_previous.state END",
@@ -101,12 +105,15 @@ def _build_task_meta_upsert(task_id: str, meta: dict, *, search_indexing_enabled
             for field in ("type", "args", "kwargs", "worker", "routing_key")
         ),
         # Retries only go up within a run; metadata from a failed attempt must not lower the count events
-        # raised. A new run has its own count, unknown without result_extended, and the finished run's
-        # progress no longer applies.
+        # raised. A result that doesn't apply (an earlier run's, still in the backend) only fills a missing
+        # count, like the invocation metadata above. A new run has its own count, unknown without
+        # result_extended, and the finished run's progress no longer applies.
         f"retries = IF {new_run} THEN $retries"
-        " ELSE IF $retries = NONE THEN $meta_previous.retries"
-        " ELSE math::max([$meta_previous.retries ?? 0, $retries]) END",
+        " ELSE IF $meta_apply_state AND $retries != NONE"
+        " THEN math::max([$meta_previous.retries ?? 0, $retries]) ELSE $meta_previous.retries ?? $retries END",
         f"progress = IF {new_run} THEN NONE ELSE $meta_previous.progress END",
+        f"run_started_at = IF {new_run} THEN $meta_timestamp ELSE $meta_previous.run_started_at END",
+        f"revoked_at = IF {new_run} THEN NONE ELSE $meta_previous.revoked_at END",
         "kwargs_search_source = IF $kwargs != NONE AND ($meta_apply_state OR $meta_previous.kwargs = NONE) "
         "THEN 'repr' ELSE $meta_previous.kwargs_search_source END",
         "workflow_id = $meta_previous.workflow_id ?? $workflow_id",

@@ -75,6 +75,7 @@ describe("DEMO_SCHEMA", () => {
       "progress.updated_at",
       "progress.attempt",
       "last_started_at",
+      "run_started_at",
     ]
     for (const field of expectedFields) {
       expect(DEMO_SCHEMA).toContain(`DEFINE FIELD OVERWRITE ${field} ON task`)

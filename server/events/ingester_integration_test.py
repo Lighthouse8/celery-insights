@@ -526,3 +526,102 @@ async def test_terminated_task_keeps_its_last_progress_after_the_poller_reads_it
     job = cast(list[dict], await surreal_db.query("SELECT * FROM task:job"))[0]
     assert job["state"] == "REVOKED"
     assert job["progress"]["current"] == 400
+
+
+async def _ingester_for(surreal_db: AsyncWsSurrealConnection, mocker: MockerFixture, task_id: str):
+    mocker.patch("events.ingester.get_db", return_value=surreal_db)
+    ingester = SurrealDBIngester(asyncio.Queue())
+
+    async def ingest(*events: dict) -> dict:
+        ingester._buffer = list(events)
+        await ingester._flush()
+        assert ingester._buffer == [], "flush failed and re-queued the batch"
+        return cast(list[dict], await surreal_db.query(f"SELECT * FROM task:{task_id}"))[0]
+
+    return ingest
+
+
+@pytest.mark.asyncio
+async def test_earlier_run_evidence_does_not_count_toward_a_reused_id(
+    surreal_db: AsyncWsSurrealConnection, mocker: MockerFixture
+) -> None:
+    ingest = await _ingester_for(surreal_db, mocker, "job")
+    run_a_received = {"type": "task-received", "uuid": "job", "timestamp": 1700000000.0, "retries": 2}
+    run_a_report = {"type": "task-progress", "uuid": "job", "timestamp": 1700000002.0, "current": 9, "attempt": 2}
+    await ingest(
+        run_a_received,
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000001.0},
+        run_a_report,
+        {"type": "task-succeeded", "uuid": "job", "timestamp": 1700000003.0},
+    )
+    job = await ingest({"type": "task-received", "uuid": "job", "timestamp": 1700000100.0, "retries": 0})
+    assert job["retries"] == 0
+
+    # Run A's delayed events arrive after run B started; they are older than run B, so they don't count.
+    job = await ingest(run_a_received, run_a_report)
+    assert job["retries"] == 0
+    assert job.get("progress") is None
+
+    # Run A's result stays in the backend until run B stores its own, and the poller can read it now.
+    await surreal_db.query(
+        *_build_task_meta_upsert("job", {"status": "SUCCESS", "retries": 2, "date_done": "2023-11-14T22:13:23Z"})
+    )
+    job = cast(list[dict], await surreal_db.query("SELECT * FROM task:job"))[0]
+    assert (job["state"], job["retries"]) == ("RECEIVED", 0)
+
+    job = await ingest({"type": "task-progress", "uuid": "job", "timestamp": 1700000101.0, "current": 1, "attempt": 0})
+    assert job["progress"]["current"] == 1
+
+
+@pytest.mark.asyncio
+async def test_replaced_task_starts_a_new_run(surreal_db: AsyncWsSurrealConnection, mocker: MockerFixture) -> None:
+    ingest = await _ingester_for(surreal_db, mocker, "job")
+    await ingest(
+        {"type": "task-received", "uuid": "job", "timestamp": 1700000000.0, "retries": 2},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000001.0},
+        {"type": "task-progress", "uuid": "job", "timestamp": 1700000002.0, "current": 9, "attempt": 2},
+    )
+
+    # self.replace() sends the replacement under the same id from retries 0; the replaced task sends no
+    # terminal event (Celery raises Ignore), so only the lower count shows a new run started.
+    job = await ingest({"type": "task-received", "uuid": "job", "timestamp": 1700000003.0, "retries": 0})
+    assert job["retries"] == 0
+    assert job.get("progress") is None
+    job = await ingest({"type": "task-progress", "uuid": "job", "timestamp": 1700000004.0, "current": 1, "attempt": 0})
+    assert job["progress"]["current"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reused_id_revoked_twice_starts_a_new_run(
+    surreal_db: AsyncWsSurrealConnection, mocker: MockerFixture
+) -> None:
+    ingest = await _ingester_for(surreal_db, mocker, "job")
+
+    async def poll(meta: dict) -> dict:
+        await surreal_db.query(*_build_task_meta_upsert("job", meta))
+        return cast(list[dict], await surreal_db.query("SELECT * FROM task:job"))[0]
+
+    await ingest(
+        {"type": "task-received", "uuid": "job", "timestamp": 1700000300.0, "retries": 1},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000301.0},
+        {"type": "task-progress", "uuid": "job", "timestamp": 1700000302.0, "current": 4, "attempt": 1},
+        {"type": "task-revoked", "uuid": "job", "timestamp": 1700000303.0, "terminated": True},
+    )
+    # The first revoke's own result, stored just after its event: same run.
+    job = await poll({"status": "REVOKED", "date_done": "2023-11-14T22:18:23.001Z"})
+    assert (job["retries"], job["progress"]["current"]) == (1, 4)
+
+    # The next run is revoked too; with its events seen, it keeps its own report when its result arrives.
+    await ingest(
+        {"type": "task-received", "uuid": "job", "timestamp": 1700000400.0, "retries": 0},
+        {"type": "task-started", "uuid": "job", "timestamp": 1700000401.0},
+        {"type": "task-progress", "uuid": "job", "timestamp": 1700000402.0, "current": 2, "attempt": 0},
+        {"type": "task-revoked", "uuid": "job", "timestamp": 1700000403.0, "terminated": True},
+    )
+    job = await poll({"status": "REVOKED", "date_done": "2023-11-14T22:20:03.001Z"})
+    assert (job["retries"], job["progress"]["current"]) == (0, 2)
+
+    # A later revoked result, with the third run's events missed, is another run.
+    job = await poll({"status": "REVOKED", "date_done": "2023-11-14T22:21:40Z"})
+    assert job.get("retries") is None
+    assert job.get("progress") is None
