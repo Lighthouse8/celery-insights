@@ -317,9 +317,13 @@ try {
       ["task:a_run"],
     )
   }
-  // Past the member cap the read takes links from only some members, so the newest member (the first the graph holds)
-  // can lose its joins; the read flags that. (10,001 members take minutes to seed, so this lowers the cap to 1,000.)
-  const capped = joinedRunsQuery(1000)
+  // The links come from the members that joined (an index on joined_workflow_id), not a scan of every member.
+  const linkRows = joinedRunsQuery().statements[0].replace(/^LET \$linkRows = /, "")
+  const linkPlan = (await root.query(`LET $workflowId = 'big';EXPLAIN ${linkRows}`).collect()).at(-1)
+  assert.match(JSON.stringify(linkPlan), /idx_task_joined_workflow_id/)
+  // Past the cap on joining members the read takes links from only some of them, so a member can lose its joins; the
+  // read flags that. (The cap is lowered to 1 here: two members joined.)
+  const capped = joinedRunsQuery(1)
   const cappedRead = (
     await root.query(`LET $workflowId = 'big';${capped.statements.join(";")};RETURN {${capped.fields}};`).collect()
   ).at(-1) as WorkflowRead
@@ -366,6 +370,24 @@ try {
   )
   assert.deepEqual([rowScopedSubtree.joinedIds, rowScopedSubtree.expanded], [[], []])
   await root.query("DELETE task WHERE workflow_id IN ['nightly', 'nested']")
+  // A joined run's subtree holds the tasks whose parent_id names a task in it even when no children list names them
+  // (an imported backup's run.children can be empty). A children entry whose task names a parent outside the
+  // expansion is stale: that task and its subtree stay out. One that names a parent reached later goes under it.
+  await root.query(
+    `CREATE task:orphan_run SET state = 'SUCCESS', workflow_id = 'orphans', children = ['stale_child', 'orphan_grandchild'], last_updated = time::now();
+    CREATE task:orphan_child SET state = 'SUCCESS', workflow_id = 'orphans', parent_id = 'orphan_run', last_updated = time::now();
+    CREATE task:orphan_grandchild SET state = 'SUCCESS', workflow_id = 'orphans', parent_id = 'orphan_child', last_updated = time::now();
+    CREATE task:stale_child SET state = 'SUCCESS', workflow_id = 'elsewhere', parent_id = 'elsewhere_root', children = ['stale_grandchild'], last_updated = time::now();
+    CREATE task:stale_grandchild SET state = 'SUCCESS', workflow_id = 'elsewhere', parent_id = 'stale_child', last_updated = time::now();
+    UPDATE task:sample SET joined_tasks = ['orphan_run'];`,
+  )
+  for (const db of [root, scopedDatabase(root, { deny_fields: ["task.result.read"] })]) {
+    const orphans = await readWorkflow(db)
+    assert.deepEqual(expandedIds(orphans), ["task:orphan_child", "task:orphan_grandchild", "task:orphan_run"])
+    assert.equal(orphans.expansionCut, 0)
+    assert(!orphans.walkedIds.includes("stale_grandchild"), "a stale branch is not walked")
+  }
+  await root.query("DELETE task WHERE workflow_id IN ['orphans', 'elsewhere']")
   // Expanded tasks carry only what their nodes need, never payloads: 200 tasks with 100 KiB results would
   // otherwise make a 20 MiB response, over the 16 MiB observation limit.
   await root.query(

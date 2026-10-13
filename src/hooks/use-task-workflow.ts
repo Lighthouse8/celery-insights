@@ -32,6 +32,8 @@ const joinedQuery = joinedRunsQuery()
 
 // One observation refresh notifies every STARTED member at once; read the workflow once per burst.
 const REFRESH_COALESCE_MS = 250
+// A busy joined run from another workflow would otherwise re-read the whole view (and reset dragged nodes) 4x a second.
+const EXPANDED_REFRESH_COALESCE_MS = 2000
 
 const EMPTY_RESULT: TaskWorkflowSnapshot = {
   task: null,
@@ -118,6 +120,18 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
     let cancelled = false
     let unsubscribe: (() => void) | undefined
     let refreshTimer: ReturnType<typeof setTimeout> | undefined
+    let refreshDue = 0
+    // Keeps the earliest pending refresh: a workflow change doesn't wait out a joined-run change's longer window.
+    const scheduleRefresh = (delay: number) => {
+      const due = Date.now() + delay
+      if (refreshTimer && refreshDue <= due) return
+      clearTimeout(refreshTimer)
+      refreshDue = due
+      refreshTimer = setTimeout(() => {
+        refreshTimer = undefined
+        void fetchSnapshot()
+      }, delay)
+    }
 
     const start = async () => {
       setIsLoading(true)
@@ -136,12 +150,8 @@ export function useTaskWorkflow(taskId: string): UseTaskWorkflowResult {
         const recordId = extractId(record.id)
         const workflowId = workflowIdRef.current
         const matchesWorkflow = !!workflowId && (record.workflow_id || record.root_id || recordId) === workflowId
-        if ((recordId === taskId || matchesWorkflow || joinedIdsRef.current.has(recordId)) && !refreshTimer) {
-          refreshTimer = setTimeout(() => {
-            refreshTimer = undefined
-            void fetchSnapshot()
-          }, REFRESH_COALESCE_MS)
-        }
+        if (recordId === taskId || matchesWorkflow) scheduleRefresh(REFRESH_COALESCE_MS)
+        else if (joinedIdsRef.current.has(recordId)) scheduleRefresh(EXPANDED_REFRESH_COALESCE_MS)
       })
     }
 

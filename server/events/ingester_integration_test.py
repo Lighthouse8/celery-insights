@@ -65,7 +65,7 @@ async def test_batched_recovery_preserves_workflow_invocation_and_errors(
             await db.signin({"username": "root", "password": "root"})
             await db.use("integration", "ingestion")
             await db.query(
-                "DEFINE TABLE task SCHEMALESS; DEFINE TABLE workflow SCHEMALESS; "
+                "DEFINE TABLE task SCHEMALESS; DEFINE TABLE task_join SCHEMALESS; DEFINE TABLE workflow SCHEMALESS; "
                 "DEFINE TABLE workflow_task TYPE RELATION IN workflow OUT task"
             )
             if search_indexing_enabled:
@@ -333,3 +333,52 @@ async def test_joined_runs_accumulate_on_the_joining_task(
     parent = await ingest(joined("late"))
     assert "late" not in parent["joined_tasks"]
     assert parent["state"] == "STARTED"
+
+
+@pytest.mark.asyncio
+async def test_a_join_reported_before_the_task_is_kept_until_its_record_exists(
+    surreal_db: AsyncWsSurrealConnection, mocker: MockerFixture
+) -> None:
+    # Task.send_event publishes task-joined from the pool child at once, while the worker buffers task-received and
+    # task-started in the main process, so a join can reach the ingester before the joining task has a record.
+    mocker.patch("events.ingester.get_db", return_value=surreal_db)
+    ingester = SurrealDBIngester(asyncio.Queue())
+
+    async def rows(sql: str) -> list[dict]:
+        return cast(list[dict], await surreal_db.query(sql))
+
+    async def ingest(*events: dict) -> None:
+        ingester._buffer = list(events)
+        await ingester._flush()
+        assert ingester._buffer == [], "flush failed and re-queued the batch"
+
+    def joined(uuid: str, *task_ids: str) -> dict:
+        return {"type": "task-joined", "uuid": uuid, "timestamp": 1700000002.0, "task_ids": list(task_ids)}
+
+    def lifecycle(event_type: str, uuid: str, timestamp: float) -> dict:
+        return {"type": event_type, "uuid": uuid, "timestamp": timestamp, "hostname": "worker-1"}
+
+    async def joined_tasks(uuid: str) -> list[str] | None:
+        return cast(list[list[str] | None], await surreal_db.query(f"SELECT VALUE joined_tasks FROM task:{uuid}"))[0]
+
+    # Join in an earlier batch than the joining task's first lifecycle event.
+    await ingest(joined("early", "run-1"))
+    assert await rows("SELECT * FROM task:early") == []
+    await ingest(joined("early", "run-2", "run-1"))
+    await ingest(lifecycle("task-received", "early", 1700000001.0))
+    assert await joined_tasks("early") == ["run-1", "run-2"]
+
+    # Join in the same batch, ahead of the joining task's upsert.
+    await ingest(joined("batched", "run-3"), lifecycle("task-received", "batched", 1700000001.0))
+    assert await joined_tasks("batched") == ["run-3"]
+
+    # A later state event keeps the joins, whichever way they were recorded.
+    await ingest(lifecycle("task-started", "early", 1700000003.0), joined("batched", "run-4"))
+    await ingest(
+        lifecycle("task-succeeded", "early", 1700000004.0), lifecycle("task-succeeded", "batched", 1700000004.0)
+    )
+    assert await joined_tasks("early") == ["run-1", "run-2"]
+    assert await joined_tasks("batched") == ["run-3", "run-4"]
+    assert (await rows("SELECT VALUE state FROM task:early"))[0] == "SUCCESS"
+    # Pending joins are merged into the task record and dropped once it exists.
+    assert await rows("SELECT * FROM task_join") == []

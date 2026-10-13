@@ -526,10 +526,39 @@ describe("getFlowGraph joined runs", () => {
     })
 
     expect(nodes.filter(isJoinedRoot)).toHaveLength(1)
-    expect(edges.filter((edge) => edge.style?.strokeDasharray)).toHaveLength(MAX_JOINED_RUNS)
+    // The entry edge into the run, then MAX_JOINED_RUNS of the other 599 links.
+    expect(edges.filter((edge) => edge.style?.strokeDasharray)).toHaveLength(1 + MAX_JOINED_RUNS)
     expect(hiddenJoinedRuns).toBe(0)
-    expect(hiddenJoinLinks).toBe(600 - MAX_JOINED_RUNS)
-    expect(hiddenJoinsNote(hiddenJoinedRuns, hiddenJoinLinks)).toBe("500 join links not shown")
+    expect(hiddenJoinLinks).toBe(599 - MAX_JOINED_RUNS)
+    expect(hiddenJoinsNote(hiddenJoinedRuns, hiddenJoinLinks)).toBe("499 join links not shown")
+  })
+
+  it("always enters each drawn run by an edge from its joiner, and bounds only the other join links", () => {
+    // "a" joins r-000..r-049 and is laid out first; "b" and "c" join r-000..r-099, so "b" owns r-050..r-099.
+    const runIds = Array.from({ length: MAX_JOINED_RUNS }, (_, index) => `r-${String(index).padStart(3, "0")}`)
+    const tasks = [
+      createTask({ id: "root" }),
+      createTask({ id: "a", parent_id: "root", joined_tasks: runIds.slice(0, 50) }),
+      createTask({ id: "b", parent_id: "root", joined_tasks: runIds }),
+      createTask({ id: "c", parent_id: "root", joined_tasks: runIds }),
+    ]
+
+    const { nodes, edges, hiddenJoinLinks } = getFlowGraph(tasks, "root", undefined, {
+      ids: runIds,
+      total: runIds.length,
+      walked: [],
+      cut: 0,
+      tasks: [],
+    })
+
+    const dashed = edges.filter((edge) => edge.style?.strokeDasharray)
+    for (const runNode of nodes.filter(isJoinedRoot)) {
+      const owner = runNode.id < "joined:r-050" ? "a" : "b"
+      expect(dashed).toContainEqual(expect.objectContaining({ source: owner, target: runNode.id }))
+    }
+    // 100 entry edges, then 100 of the 150 other links (b's 50 into a's runs, c's 100).
+    expect(dashed).toHaveLength(MAX_JOINED_RUNS + MAX_JOINED_RUNS)
+    expect(hiddenJoinLinks).toBe(50)
   })
 
   it("notes left-out joined runs and join links together", () => {
@@ -548,15 +577,15 @@ describe("getFlowGraph joined runs", () => {
     expect(graph.nodes.filter(isJoinedRoot)).toHaveLength(0)
     expect(graph.edges.filter((edge) => edge.style?.strokeDasharray)).toHaveLength(0)
     expect(hiddenJoinsNote(graph.hiddenJoinedRuns, graph.hiddenJoinLinks, graph.hiddenJoinedBranches, true)).toBe(
-      "Joins from members beyond the first 10,000 read aren't shown",
+      "Joins from members beyond the first 10,000 that joined runs aren't shown",
     )
     expect(hiddenJoinsNote(1, 0, 0, true)).toBe(
-      "1 more joined run not shown\nJoins from members beyond the first 10,000 read aren't shown",
+      "1 more joined run not shown\nJoins from members beyond the first 10,000 that joined runs aren't shown",
     )
     const { getByText } = render(
       createElement(ReactFlowProvider, null, createElement(FlowChart, { tasks, rootTaskId: "root", joinedRuns })),
     )
-    expect(getByText("Joins from members beyond the first 10,000 read aren't shown")).toBeInTheDocument()
+    expect(getByText("Joins from members beyond the first 10,000 that joined runs aren't shown")).toBeInTheDocument()
   })
 
   it("gives joined nodes ids no member node has", () => {
@@ -691,6 +720,24 @@ describe("getFlowGraph joined runs", () => {
       )
       const spots = graph.nodes.map((candidate) => `${candidate.position.x},${candidate.position.y}`)
       expect(new Set(spots).size).toBe(spots.length)
+    })
+
+    it("adopts a listed child only when it names no other parent", () => {
+      const joiner = createTask({ id: "root", joined_tasks: ["run"] })
+      const run = createTask({ id: "run", workflow_id: "other", children: ["stale", "loose"] })
+      // A stale children entry: the child names a parent outside the expansion.
+      const stale = createTask({ id: "stale", workflow_id: "elsewhere", parent_id: "other-parent" })
+      const loose = createTask({ id: "loose", workflow_id: "other" })
+      const result = getFlowGraph([joiner], "root", undefined, {
+        ids: ["run"],
+        total: 1,
+        tasks: [run, stale, loose],
+        walked: ["run", "stale", "loose"],
+        cut: 0,
+      })
+
+      expect(result.nodes.find((candidate) => candidate.id === "joined:stale")).toBeUndefined()
+      expect(result.edges.map((edge) => [edge.source, edge.target])).toContainEqual(["joined:run", "joined:loose"])
     })
 
     it("notes the branches the read left unexpanded", () => {

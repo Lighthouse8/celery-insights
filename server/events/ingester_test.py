@@ -118,7 +118,7 @@ class TestBuildTaskUpsert:
             " WHERE $t0_previous.workflow_id != NONE AND $t0_previous.workflow_id != $t0_workflow_id"
         ) in query
         query, _ = build_task_upsert({"type": "task-started", "uuid": "x", "timestamp": 1700000000.0}, 0)
-        assert "DELETE" not in query
+        assert "DELETE type::record('workflow'" not in query
 
     def test_metadata_fills_missing_fields_from_older_events_only(self):
         event = {
@@ -191,7 +191,10 @@ class TestBuildTaskJoinedUpdate:
 
         assert query == (
             "UPDATE type::record('task', $jn3_id) SET "
-            "joined_tasks = array::slice(array::union(joined_tasks ?? [], $jn3_ids), 0, 100)"
+            "joined_tasks = array::slice(array::union(joined_tasks ?? [], $jn3_ids), 0, 100); "
+            "IF (SELECT VALUE id FROM type::record('task', $jn3_id)) = [] { "
+            "UPSERT type::record('task_join', $jn3_id) SET "
+            "ids = array::slice(array::union(ids ?? [], $jn3_ids), 0, 100); }"
         )
         assert params == {"jn3_id": "parent", "jn3_ids": ["run-1", "run-2"]}
 
@@ -444,7 +447,8 @@ class TestSurrealDBIngester:
         query_str = mock_db.query_raw.call_args[0][0]
         assert "UPDATE type::record('task', $jn0_id) SET joined_tasks" in query_str
         assert "CREATE event SET" in query_str
-        assert "UPSERT" not in query_str
+        assert "UPSERT type::record('task'," not in query_str
+        assert "UPSERT type::record('workflow'" not in query_str
         assert "RELATE" not in query_str
 
     @pytest.mark.asyncio

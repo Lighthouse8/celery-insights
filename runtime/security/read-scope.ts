@@ -84,7 +84,9 @@ export function scopedDatabase(db: Pick<Surreal, "query">, scope: ReadScope): Pi
     taskMetadata,
     `${JSON.stringify(scope.deny_fields)} AS restricted_fields`,
     `${taskScoped(scope)} AS relationships_restricted`,
-    ...(!taskScoped(scope) ? ["root_id,parent_id,workflow_id,children,joined_tasks"] : ["[] AS children"]),
+    ...(!taskScoped(scope)
+      ? ["root_id,parent_id,workflow_id,children,joined_tasks,joined_workflow_id"]
+      : ["[] AS children"]),
     ...(!denied.has("task.input.read") ? ["args,kwargs"] : []),
     ...(!denied.has("task.result.read") ? ["result,result_truncated"] : []),
     ...(!denied.has("task.failure.read") ? ["exception,traceback"] : []),
@@ -109,9 +111,14 @@ export function scopedDatabase(db: Pick<Surreal, "query">, scope: ReadScope): Pi
         throw new AuthError(403, "Invalid observation operation")
       // Exact source replacement in trusted application queries, not a user SQL parser.
       const transformed = sql.replace(
-        /\bFROM\s+(type::record\('(task|worker|workflow|event)',\s*\$[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\)|\$searchTasks\b|\$searchWorkflowRows\b|workflow_task\b|workflow\b|worker\b|event\b|task\b)/g,
-        // A point read projects the record itself, so it never scans the table.
-        (_match, source: string, table?: string) => `FROM ${sources[table ?? searchSources[source] ?? source](source)}`,
+        /\bFROM\s+(type::record\('(task|worker|workflow|event)',\s*\$[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\)|task\s+WHERE\s+parent_id\s+IN\s+(\$[A-Za-z_][A-Za-z0-9_]*)(?=\s+(?:LIMIT|TIMEOUT)\b)|\$searchTasks\b|\$searchWorkflowRows\b|workflow_task\b|workflow\b|worker\b|event\b|task\b)/g,
+        // A point read projects the record itself, so it never scans the table. A children lookup keeps its
+        // parent_id filter on the table, where the index serves it; under a task scope relationships are hidden, so
+        // it finds nothing, as filtering the projection would.
+        (_match, source: string, table?: string, parentIds?: string) =>
+          parentIds
+            ? `FROM (SELECT ${taskFields} FROM task WHERE ${taskScoped(scope) ? "false" : `parent_id IN ${parentIds}`})`
+            : `FROM ${sources[table ?? searchSources[source] ?? source](source)}`,
       )
       return db.query(transformed, { ...parameters, ...bindings })
     }) as Surreal["query"],

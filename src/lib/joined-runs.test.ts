@@ -10,7 +10,8 @@ describe("joinedRunsQuery", () => {
   const { statements, fields } = joinedRunsQuery()
   const statement = (name: string) => statements.find((candidate) => candidate.startsWith(`LET $${name} =`)) ?? ""
 
-  it("takes at most MAX_LINKING_MEMBERS members' links, unordered so the scan stops there, and flags more", () => {
+  it("takes at most MAX_LINKING_MEMBERS joining members' links, by index and unordered, and flags more", () => {
+    expect(statement("linkRows")).toContain("WHERE joined_workflow_id = $workflowId ")
     expect(statement("linkRows")).toContain(` LIMIT ${MAX_LINKING_MEMBERS + 1} `)
     expect(statement("linkRows")).not.toContain("ORDER BY")
     expect(statement("links")).toBe(`LET $links = array::slice($linkRows,0,${MAX_LINKING_MEMBERS})`)
@@ -19,16 +20,20 @@ describe("joinedRunsQuery", () => {
 
   it("chooses the first MAX_JOINED_RUNS non-member joined ids", () => {
     expect(statement("seen0")).toBe(`LET $seen0 = array::slice($joinedCandidates,0,${MAX_JOINED_RUNS})`)
-    expect(statement("joinedCandidates")).toContain("array::complement(")
-    expect(statement("joinedCandidates")).toContain("$links.task_id")
+    expect(statement("linked")).toContain("$links.task_id")
+    expect(statement("memberJoins")).toContain(") TIMEOUT 2s)[0] = $workflowId)")
+    expect(statement("joinedCandidates")).toBe("LET $joinedCandidates = array::complement($linked,$memberJoins)")
   })
 
-  it("walks children and joined runs level by level, skipping seen tasks and members", () => {
+  it("walks children, joined runs and children by parent_id level by level, skipping seen tasks and members", () => {
     for (let level = 1; level <= MAX_EXPANSION_DEPTH; level++) {
       const next = statement(`next${level}`)
       expect(next).toContain(`$found${level - 1}.children`)
       expect(next).toContain(`$found${level - 1}.joined_tasks`)
-      expect(next).toContain(`array::concat($seen${level - 1},$links.task_id)`)
+      expect(next).toContain(`$byParent${level}`)
+      expect(next).toContain(`array::concat($seen${level - 1},$skip)`)
+      expect(statement(`byParent${level}`)).toContain(`FROM task WHERE parent_id IN $parents${level} LIMIT `)
+      expect(statement(`found${level}`)).toContain(`$task.parent_id IN $expandedIds${level - 1}`)
     }
     expect(statement(`next${MAX_EXPANSION_DEPTH + 1}`)).toBe("")
   })

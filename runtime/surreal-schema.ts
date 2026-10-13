@@ -65,6 +65,8 @@ DEFINE FIELD OVERWRITE workflow_id ON task TYPE string;
 DEFINE FIELD OVERWRITE children ON task TYPE array<string> DEFAULT [];
 -- Active runs this task joined (task-joined events) instead of sending its own.
 DEFINE FIELD OVERWRITE joined_tasks ON task TYPE option<array<string>>;
+-- The workflow of a task that joined runs, else NONE: indexed for the task-workflow read's joined-run links.
+DEFINE FIELD OVERWRITE joined_workflow_id ON task TYPE option<string> VALUE IF joined_tasks THEN workflow_id END;
 DEFINE FIELD OVERWRITE worker ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE result ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE result_truncated ON task TYPE bool DEFAULT false;
@@ -78,6 +80,17 @@ DEFINE INDEX OVERWRITE idx_task_root_id ON task FIELDS root_id;
 DEFINE INDEX OVERWRITE idx_task_workflow_id ON task FIELDS workflow_id;
 DEFINE INDEX OVERWRITE idx_task_last_updated ON task FIELDS last_updated;
 DEFINE INDEX OVERWRITE idx_task_parent_id ON task FIELDS parent_id;
+DEFINE INDEX OVERWRITE idx_task_joined_workflow_id ON task FIELDS joined_workflow_id;
+
+-- Joins (task-joined events) that arrived before the joining task had a record, keyed by its id. The task's
+-- first upsert moves them onto task.joined_tasks and deletes the row.
+DEFINE TABLE IF NOT EXISTS task_join SCHEMAFULL
+  PERMISSIONS
+    FOR select, create, update, delete NONE;
+
+DEFINE FIELD OVERWRITE ids ON task_join TYPE array<string>;
+DEFINE FIELD OVERWRITE created_at ON task_join TYPE datetime DEFAULT time::now();
+DEFINE INDEX OVERWRITE idx_task_join_created_at ON task_join FIELDS created_at;
 
 DEFINE TABLE IF NOT EXISTS workflow SCHEMAFULL
   PERMISSIONS

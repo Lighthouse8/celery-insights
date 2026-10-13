@@ -95,6 +95,20 @@ describe("scoped point reads", () => {
       }
   })
 
+  it("keeps a children lookup's parent_id filter on the table, and finds nothing under a task scope", () => {
+    const lookup = "SELECT VALUE record::id(id) FROM task WHERE parent_id IN $parents1 LIMIT 5 TIMEOUT 2s"
+    const payloadOnly = transformed({ deny_fields: ["task.result.read"] }, lookup)
+    expect(payloadOnly).toMatch(
+      /^SELECT VALUE record::id\(id\) FROM \(SELECT .+ FROM task WHERE parent_id IN \$parents1\) LIMIT 5 TIMEOUT 2s$/,
+    )
+    expect(payloadOnly).not.toContain("result,")
+    expect(transformed({ task_ids: ["a"], deny_fields: [] }, lookup)).toContain("FROM task WHERE false) LIMIT 5")
+    // Any other filter stays outside the projection.
+    expect(
+      transformed({ deny_fields: ["task.result.read"] }, "SELECT * FROM task WHERE parent_id IN $p AND x"),
+    ).toMatch(/FROM \(SELECT .+ FROM task WHERE true\) WHERE parent_id IN \$p AND x$/)
+  })
+
   it("keeps the source's row filters on a record lookup", () => {
     const scope = { task_ids: ["a"], worker_hostnames: ["w"], deny_fields: [] }
     expect(transformed(scope, "SELECT * FROM type::record('task', $id)")).toContain(

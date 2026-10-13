@@ -37,6 +37,8 @@ DEFINE FIELD OVERWRITE parent_id ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE children ON task TYPE array<string> DEFAULT [];
 -- Active runs this task joined (task-joined events) instead of sending its own.
 DEFINE FIELD OVERWRITE joined_tasks ON task TYPE option<array<string>>;
+-- The workflow of a task that joined runs, else NONE: indexed for the task-workflow read's joined-run links.
+DEFINE FIELD OVERWRITE joined_workflow_id ON task TYPE option<string> VALUE IF joined_tasks THEN workflow_id END;
 DEFINE FIELD OVERWRITE worker ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE result ON task TYPE option<string>;
 DEFINE FIELD OVERWRITE result_truncated ON task TYPE bool DEFAULT false;
@@ -49,6 +51,7 @@ DEFINE INDEX OVERWRITE idx_task_worker ON task FIELDS worker;
 DEFINE INDEX OVERWRITE idx_task_root_id ON task FIELDS root_id;
 DEFINE INDEX OVERWRITE idx_task_workflow_id ON task FIELDS workflow_id;
 DEFINE INDEX OVERWRITE idx_task_last_updated ON task FIELDS last_updated;
+DEFINE INDEX OVERWRITE idx_task_joined_workflow_id ON task FIELDS joined_workflow_id;
 
 DEFINE TABLE IF NOT EXISTS workflow SCHEMAFULL PERMISSIONS FULL;
 
