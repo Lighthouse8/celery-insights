@@ -36,6 +36,22 @@ describe("SettingsPanel", () => {
     expect(fields).toHaveAttribute("aria-invalid", "true")
   })
 
+  it("drops hidden task node fields the field list no longer names", async () => {
+    const user = userEvent.setup()
+    useSettingsStore.setState({
+      taskNodeLabels: true,
+      taskNodeFields: "type,kwargs.channel",
+      hiddenTaskNodeFields: ["kwargs.channel"],
+    })
+    render(<SettingsPanel />)
+
+    const fields = screen.getByRole("textbox", { name: "Task node fields" })
+    await user.clear(fields)
+    await user.type(fields, "type,kwargs.channel")
+
+    expect(useSettingsStore.getState().hiddenTaskNodeFields).toEqual([])
+  })
+
   it("updates the welcome banner preference", async () => {
     const user = userEvent.setup()
     render(<SettingsPanel />)

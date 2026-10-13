@@ -81,6 +81,9 @@ const miniMapViewScale = (state: ReactFlowState): number => {
   return Math.max((view.x2 - view.x) / MINIMAP_WIDTH, (view.y2 - view.y) / MINIMAP_HEIGHT)
 }
 
+// Without labels the margin stays fixed, so the MiniMap skips the node bounds pass on every store update.
+const noViewScale = () => 0
+
 const TaskMiniMapNode = (props: MiniMapNodeProps) => {
   const labelLines = useContext(TaskNodeFieldsContext).length
   return <MiniMapNode {...props} {...labelledBounds(props, labelLines)} />
@@ -92,7 +95,7 @@ const TaskMiniMapNode = (props: MiniMapNodeProps) => {
  */
 const TaskMiniMap = ({ bgColor, maskColor }: { bgColor: string; maskColor: string }) => {
   const labelLines = useContext(TaskNodeFieldsContext).length
-  const viewScale = useStore(miniMapViewScale)
+  const viewScale = useStore(labelLines ? miniMapViewScale : noViewScale)
   const { side, below } = labelOverhang(labelLines)
   return (
     <MiniMap
@@ -262,8 +265,8 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
   // Bounds need measured nodes, and on mount the store has none yet: hold the fit until React Flow measures them.
   const nodesInitialized = useNodesInitialized()
   const fitPending = useRef(false)
+  // Fits now or not at all; only the mount path below holds a fit until the nodes are measured.
   const fitView = useCallback(() => {
-    fitPending.current = !nodesInitialized
     if (nodesInitialized)
       flow.fitBounds(labelledBounds(flow.getNodesBounds(flow.getNodes()), visible.length), {
         duration: ZOOM_ANIMATION_SPEED,
@@ -272,7 +275,9 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
   }, [flow, nodesInitialized, visible.length])
 
   useEffect(() => {
-    if (nodesInitialized && fitPending.current) fitView()
+    if (!nodesInitialized || !fitPending.current) return
+    fitPending.current = false
+    fitView()
   }, [nodesInitialized, fitView])
 
   useEffect(() => {
@@ -300,6 +305,7 @@ const FlowChart: React.FC<FlowChartProps> = ({ tasks, rootTaskId, currentTaskId 
   }, [grid, setNodes])
 
   useEffect(() => {
+    fitPending.current = !currentTaskId && !nodesInitialized
     if (!currentTaskId) fitView()
     else focusNode(currentTaskId)
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -81,46 +81,75 @@ const closeCandidates = (text: string, start: number): number[] => {
   return candidates
 }
 
+// saferepr writes bytes (b'it's') and custom reprs (<Opaque it's>) as they are, quotes unescaped. Like search's
+// lenient pattern, such a value after a delimiter runs to the first close that a delimiter (or the end) follows.
+// Returns that close when start opens such a value.
+const opaqueClose = (text: string, start: number): string | undefined => {
+  const character = text[start]
+  const bytes = (character === "'" || character === '"') && text[start - 1] === "b"
+  if (character !== "<" && !bytes) return undefined
+  let before = (bytes ? start - 1 : start) - 1
+  while (before >= 0 && /\s/.test(text[before])) before--
+  return before >= 0 && ":,[({".includes(text[before]) ? (bytes ? character : ">") : undefined
+}
+
 /**
  * Picks each quoted string's end the way the search matcher does: the first candidate after which the rest of
- * the text still splits into quoted strings and plain characters without a backslash. Text no reading splits
- * (bytes or a custom __repr__ with a stray quote) takes the first candidate.
+ * the text still splits into quoted strings, opaque values and plain characters without a backslash. Text no
+ * reading splits takes the first candidate.
  */
 const quotedStrings = (text: string) => {
-  // splits[index]: the text from index on splits. One right-to-left pass fills it, so a reading looks up the
-  // readings after it rather than recursing through every later string (a stack frame each), and it tracks
-  // closeCandidates' ends as it goes rather than rescanning them per quote (quadratic on a run of `\'`).
-  let splits: boolean[] | undefined
-  const fillSplits = () => {
-    const result: boolean[] = []
+  // splits[index]: the text from index on splits; opaqueEnds[index]: where an opaque value opened there ends. One
+  // right-to-left pass fills both, so a reading looks up the readings after it rather than recursing through
+  // every later string (a stack frame each), and it tracks closeCandidates' ends as it goes rather than
+  // rescanning them per quote (quadratic on a run of `\'`).
+  let tables: { splits: boolean[]; opaqueEnds: number[] } | undefined
+  const fillTables = () => {
+    const splits: boolean[] = []
+    const opaqueEnds: number[] = []
     // Where a double-quoted string read from index closes, outside an escape.
     const doubleClose: number[] = []
     // Whether a single-quoted string opened before the nearest ' has a candidate end from there on that splits.
     let singleSplits = false
-    result[text.length] = true
+    // After index: the nearest non-space character, and where the nearest close of each kind that a delimiter
+    // follows ends.
+    let solid = text.length
+    const delimitedEnds: Record<string, number | undefined> = {}
+    splits[text.length] = true
     for (let index = text.length - 1; index >= 0; index--) {
       const character = text[index]
+      const close = opaqueClose(text, index)
+      const opaqueEnd = close ? delimitedEnds[close] : undefined
+      if (opaqueEnd !== undefined) opaqueEnds[index] = opaqueEnd
       doubleClose[index] =
         character === '"' ? index : character === "\\" ? doubleClose[index + 2] : doubleClose[index + 1]
       if (character === "'") {
-        result[index] = singleSplits
-        singleSplits = result[index + 1] || (text[index - 1] === "\\" && singleSplits)
+        splits[index] = opaqueEnd !== undefined ? splits[opaqueEnd] : singleSplits
+        singleSplits = splits[index + 1] || (text[index - 1] === "\\" && singleSplits)
+      } else if (opaqueEnd !== undefined) {
+        splits[index] = splits[opaqueEnd]
       } else if (character === '"') {
-        const close = doubleClose[index + 1]
-        result[index] = close !== undefined && result[close + 1]
+        const end = doubleClose[index + 1]
+        splits[index] = end !== undefined && splits[end + 1]
       } else {
         // saferepr only writes a backslash inside a string, so one outside every string rejects the reading.
-        result[index] = character !== "\\" && result[index + 1]
+        splits[index] = character !== "\\" && splits[index + 1]
       }
+      if ("'\">".includes(character) && (solid === text.length || ",:)]}".includes(text[solid])))
+        delimitedEnds[character] = index + 1
+      if (!/\s/.test(character)) solid = index
     }
-    return result
+    return { splits, opaqueEnds }
   }
   return (start: number): number => {
+    const opaqueEnd = opaqueClose(text, start) && (tables ??= fillTables()).opaqueEnds[start]
+    if (opaqueEnd) return opaqueEnd
+    if (text[start] === "<") return start + 1
     const candidates = closeCandidates(text, start)
     // Without a backslash every string has one end.
     if (candidates.length < 2) return candidates[0] ?? text.length
-    const readings = (splits ??= fillSplits())
-    return candidates.find((end) => readings[end]) ?? candidates[0]
+    const { splits } = (tables ??= fillTables())
+    return candidates.find((end) => splits[end]) ?? candidates[0]
   }
 }
 
@@ -129,7 +158,7 @@ const itemEnd = (text: string, start: number, isKey: boolean, quotedEnd: (start:
   let depth = 0
   for (let index = start; index < text.length; index++) {
     const character = text[index]
-    if (character === "'" || character === '"') index = quotedEnd(index) - 1
+    if (character === "'" || character === '"' || character === "<") index = quotedEnd(index) - 1
     else if ("([{".includes(character)) depth++
     else if (")]}".includes(character)) {
       if (!depth) return index
@@ -185,7 +214,6 @@ export interface TaskNodeLabel {
 
 const attributeValue = (task: Task, path: string): string | undefined => {
   const value = (task as unknown as Record<string, unknown>)[path]
-  if (value instanceof Date) return value.toLocaleString()
   if (typeof value === "string") return value || undefined
   return typeof value === "number" || typeof value === "boolean" ? String(value) : undefined
 }

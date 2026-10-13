@@ -79,6 +79,45 @@ describe("reprItems", () => {
     )
   })
 
+  it("ends saferepr's unescaped bytes and custom reprs at the first close a delimiter follows", () => {
+    expect(reprItems(fixtureKwargs("bytes_before"))).toEqual(
+      new Map([
+        ["organization_id", "11"],
+        ["blob", "b'it's'"],
+      ]),
+    )
+    expect(reprItems(fixtureKwargs("bytes_after"))).toEqual(
+      new Map([
+        ["blob", "b'it's'"],
+        ["organization_id", "12"],
+      ]),
+    )
+    expect(reprItems(fixtureKwargs("bytes_apostrophe"))).toEqual(
+      new Map([
+        ["blob", "b'it's'"],
+        ["organization_id", "14"],
+        ["note", "it\\'s"],
+      ]),
+    )
+    expect(reprItems(fixtureKwargs("bytes_text_inside"))).toEqual(
+      new Map([["note", 'see b\\\'x, "organization_id": 1, c']]),
+    )
+    expect(reprItems(fixtureKwargs("two_bytes"))).toEqual(
+      new Map([
+        ["a", "b'it's'"],
+        ["organization_id", "27"],
+        ["b", "b'it's'"],
+      ]),
+    )
+    expect(reprItems(fixtureKwargs("two_reprs"))).toEqual(
+      new Map([
+        ["a", "<Opaque it's>"],
+        ["organization_id", "28"],
+        ["b", "<Opaque it's>"],
+      ]),
+    )
+  })
+
   it("splits thousands of strings after a \\' without a stack frame per string", () => {
     const text = `('x\\'', ${"'',".repeat(2_700)})`
     const nested = <T>(frames: number, run: () => T): T => (frames ? nested(frames - 1, run) : run())

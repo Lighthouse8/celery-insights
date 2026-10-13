@@ -45,10 +45,12 @@ const recordUserChoices =
   (set, get, api) => {
     setDefaults = (state) => set(state)
     const setState = api.setState
-    api.setState = ((partial: Partial<Settings> | ((state: Settings) => Partial<Settings>)) => {
+    api.setState = ((partial: Partial<Settings> | ((state: Settings) => Partial<Settings>), replace?: boolean) => {
       const next = typeof partial === "function" ? partial(get()) : partial
       const chosen = Object.keys(next).filter((key): key is SettingKey => key !== "userSet")
-      setState({ ...next, userSet: [...new Set([...get().userSet, ...chosen])] })
+      // A replace keeps only the given settings, so only those stay chosen.
+      const userSet = replace ? chosen : [...new Set([...get().userSet, ...chosen])]
+      setState({ ...next, userSet } as Settings, replace as true)
     }) as typeof api.setState
     return config(set, get, api)
   }
