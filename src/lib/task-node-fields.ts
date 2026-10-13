@@ -93,10 +93,13 @@ const opaqueClose = (text: string, start: number): string | undefined => {
   return before >= 0 && ":,[({".includes(text[before]) ? (bytes ? character : ">") : undefined
 }
 
+// Sticky: matches at lastIndex when a delimiter or the end of the text follows, past any spaces.
+const DELIMITED = /\s*(?:[,:)\]}]|$)/y
+
 /**
  * Picks each quoted string's end the way the search matcher does: the first candidate after which the rest of
- * the text still splits into quoted strings, opaque values and plain characters without a backslash. Text no
- * reading splits takes the first candidate.
+ * the text still splits into quoted strings, opaque values and plain characters without a backslash, preferring
+ * one a delimiter follows. Text no reading splits takes the first candidate.
  */
 const quotedStrings = (text: string) => {
   // splits[index]: the text from index on splits; opaqueEnds[index]: where an opaque value opened there ends. One
@@ -149,7 +152,12 @@ const quotedStrings = (text: string) => {
     // Without a backslash every string has one end.
     if (candidates.length < 2) return candidates[0] ?? text.length
     const { splits } = (tables ??= fillTables())
-    return candidates.find((end) => splits[end]) ?? candidates[0]
+    // A real close is followed by a delimiter or the end. Opaque values let junk after a `\'` split too, so a
+    // delimited candidate goes first.
+    const delimited = (end: number) => ((DELIMITED.lastIndex = end), DELIMITED.test(text))
+    return (
+      candidates.find((end) => splits[end] && delimited(end)) ?? candidates.find((end) => splits[end]) ?? candidates[0]
+    )
   }
 }
 

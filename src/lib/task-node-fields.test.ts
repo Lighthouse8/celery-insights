@@ -116,6 +116,20 @@ describe("reprItems", () => {
         ["b", "<Opaque it's>"],
       ]),
     )
+    // A \' that a letter follows never ends a string, even when the junk after it would split as bytes.
+    expect(reprItems("{'note': 'it\\'s, b', 'y': 1}")).toEqual(
+      new Map([
+        ["note", "it\\'s, b"],
+        ["y", "1"],
+      ]),
+    )
+    expect(reprItems("{'note': 'it\\'s', 'blob': b'it's', 'id': 1}")).toEqual(
+      new Map([
+        ["note", "it\\'s"],
+        ["blob", "b'it's'"],
+        ["id", "1"],
+      ]),
+    )
   })
 
   it("splits thousands of strings after a \\' without a stack frame per string", () => {
