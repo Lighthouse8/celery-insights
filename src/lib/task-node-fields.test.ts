@@ -233,6 +233,9 @@ describe("reprItems", () => {
       ]),
     )
     expect(reprItems("{'name': 'O\\'Brien Ads', 'ref': UUID('0000...")).toEqual(new Map([["name", "O\\'Brien Ads"]]))
+    // A string Celery cut whose only quote before the marker is a \' may run past it, so it gets no label.
+    expect(reprItems("{'id': 1, 'note': 'a\\', 9...")).toEqual(new Map([["id", "1"]]))
+    expect(reprItems("{'id': 1, 'note': 'it\\'s a long text...")).toEqual(new Map([["id", "1"]]))
     expect(reprItems("{'id': 1, 'a': <Foo 1, 2...")).toEqual(new Map([["id", "1"]]))
     expect(reprItems("(<Foo 1, 2...")).toEqual(new Map())
     // A bare < is still a plain character.

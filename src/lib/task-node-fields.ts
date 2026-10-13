@@ -65,9 +65,9 @@ const MAX_REPR_LENGTH = 8_192
 
 // Where each quoted string may close. JSON and repr escape every quote inside double quotes. Celery's saferepr
 // writes backslashes raw and escapes only ', so in single quotes `\'` is either an escaped quote or a string
-// ending in a backslash ('C:\'): every `\'` up to the first bare quote is a candidate. In cut text with no bare
+// ending in a backslash ('C:\'): every `\'` up to the first bare quote is a candidate. In open text (cut at the cap or by Celery) with no bare
 // quote after the start, the string may also close past the cut, read as running to the end.
-const closeCandidates = (text: string, start: number, cut: boolean): number[] => {
+const closeCandidates = (text: string, start: number, open: boolean): number[] => {
   if (text[start] === '"') {
     for (let index = start + 1; index < text.length; index++)
       if (text[index] === "\\") index++
@@ -80,7 +80,7 @@ const closeCandidates = (text: string, start: number, cut: boolean): number[] =>
     candidates.push(index + 1)
     if (text[index - 1] !== "\\") return candidates
   }
-  if (cut && candidates.at(-1) !== text.length) candidates.push(text.length)
+  if (open && candidates.at(-1) !== text.length) candidates.push(text.length)
   return candidates
 }
 
@@ -178,7 +178,7 @@ const quotedStrings = (text: string, cut: boolean, open: boolean) => {
     const opaqueEnd = opaqueClose(text, start) && (tables ??= fillTables()).opaqueEnds[start]
     if (opaqueEnd) return opaqueEnd
     if (text[start] === "<") return start + 1
-    const candidates = closeCandidates(text, start, cut)
+    const candidates = closeCandidates(text, start, open)
     // Without a backslash every string has one end.
     if (candidates.length < 2) return candidates[0] ?? text.length
     const { splits, clean } = (tables ??= fillTables())
