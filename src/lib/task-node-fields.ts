@@ -110,7 +110,7 @@ const DELIMITED = /\s*(?:[,:)\]}]|$)/y
  * qualifying candidate is the end. With several, saferepr could have written the text from different arguments; with
  * none, the text isn't saferepr's (or is one of those exceptions), and any pick is a guess.
  */
-const quotedStrings = (text: string, cut: boolean, open: boolean) => {
+const quotedStrings = (text: string, open: boolean) => {
   // splits[index]: the text from index on splits; clean[index]: it splits with bytes read as plain strings and <
   // as a plain character; opaqueEnds[index]: where an opaque value opened there ends, or -1 when that's ambiguous.
   // One right-to-left pass fills all three, so a reading looks up the readings
@@ -228,7 +228,7 @@ export const reprItems = (fullText: string | undefined): Map<string, string> => 
   if (!text || start < 0 || !"{[(".includes(text[start])) return items
   // Celery's truncation ends the text in `...`, then at most `, ...` and closing brackets.
   const open = cut || /\.\.\.(?:, \.\.\.)?[\s)\]}]*$/.test(text)
-  const quoted = quotedStrings(text, cut, open)
+  const quoted = quotedStrings(text, open)
   // Bytes and <…> values end at a guessed close. When the text after them breaks the container's grammar, the guess
   // was wrong somewhere, so the labels from the first item with such a value on are dropped.
   let opaque = false
