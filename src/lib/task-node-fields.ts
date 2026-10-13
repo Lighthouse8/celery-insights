@@ -59,7 +59,8 @@ export const invalidTaskNodeFields = (spec: string): string[] =>
     .filter((field) => !isFieldPath(field.path))
     .map((field) => field.path)
 
-// Longer serialized arguments (a custom argsrepr; Celery's own stops at 1 KiB) get no labels.
+// Longer serialized arguments (full kwargs from the result backend, or a custom argsrepr; Celery's own stops at 1 KiB)
+// are read up to here, as if cut. That bounds the work per node: 64 KiB takes several milliseconds to split.
 const MAX_REPR_LENGTH = 8_192
 
 // Where each quoted string may close. JSON and repr escape every quote inside double quotes. Celery's saferepr
@@ -102,7 +103,7 @@ const DELIMITED = /\s*(?:[,:)\]}]|$)/y
  * follow it, and a reading that splits without an opaque value wins. Text no reading splits takes the first
  * candidate.
  */
-const quotedStrings = (text: string) => {
+const quotedStrings = (text: string, cut: boolean) => {
   // splits[index]: the text from index on splits; clean[index]: it splits with bytes read as plain strings and <
   // as a plain character; opaqueEnds[index]: where an opaque value opened there ends. One right-to-left pass fills
   // all three, so a reading looks up the readings after it rather than recursing through every later string (a
@@ -116,9 +117,9 @@ const quotedStrings = (text: string) => {
     // Where a double-quoted string read from index closes, outside an escape.
     const doubleClose: number[] = []
     // Whether a single-quoted string opened before the nearest ' has a candidate end from there on that splits
-    // (cleanly).
-    let singleSplits = false
-    let singleClean = false
+    // (cleanly). In cut text a string may close past the cut.
+    let singleSplits = cut
+    let singleClean = cut
     // After index: the nearest non-space character, and where the nearest close of each kind that a delimiter
     // follows ends.
     let solid = text.length
@@ -139,8 +140,8 @@ const quotedStrings = (text: string) => {
         singleClean = clean[index + 1] || (escaped && singleClean)
       } else if (character === '"') {
         const end = doubleClose[index + 1]
-        splits[index] = end !== undefined && splits[end + 1]
-        clean[index] = end !== undefined && clean[end + 1]
+        splits[index] = end === undefined ? cut : splits[end + 1]
+        clean[index] = end === undefined ? cut : clean[end + 1]
       } else {
         // saferepr only writes a backslash inside a string, so one outside every string rejects the reading.
         splits[index] = character !== "\\" && splits[index + 1]
@@ -202,11 +203,13 @@ const displayValue = (raw: string): string => {
  * the text at 1 KiB and writes `...` for what it left out, and values can be reprs no literal parser reads
  * (`datetime.date(2024, 1, 2)`), so each item is split out by its delimiters and shown as written.
  */
-export const reprItems = (text: string | undefined): Map<string, string> => {
+export const reprItems = (fullText: string | undefined): Map<string, string> => {
   const items = new Map<string, string>()
+  const cut = (fullText?.length ?? 0) > MAX_REPR_LENGTH
+  const text = cut ? fullText!.slice(0, MAX_REPR_LENGTH) : fullText
   const start = text?.search(/\S/) ?? -1
-  if (!text || start < 0 || text.length > MAX_REPR_LENGTH || !"{[(".includes(text[start])) return items
-  const quotedEnd = quotedStrings(text)
+  if (!text || start < 0 || !"{[(".includes(text[start])) return items
+  const quotedEnd = quotedStrings(text, cut)
   const isDictionary = text[start] === "{"
   for (let index = start + 1, position = 0; index < text.length && !")]}".includes(text[index]); position++) {
     let key = String(position)
@@ -219,7 +222,8 @@ export const reprItems = (text: string | undefined): Map<string, string> => {
     const end = itemEnd(text, index, false, quotedEnd)
     const raw = text.slice(index, end).trim()
     // Nothing before the close: an empty container (`[ ]`) or a trailing comma (`(7, )`).
-    if (!raw || raw === "...") break
+    // An item that runs to the cut may continue past it.
+    if (!raw || raw === "..." || (cut && end === text.length)) break
     if (!items.has(key)) items.set(key, displayValue(raw))
     index = text[end] === "," ? end + 1 : end
   }

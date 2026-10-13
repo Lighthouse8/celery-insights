@@ -178,6 +178,45 @@ describe("reprItems", () => {
       ]),
     )
   })
+
+  it("reads text past the length cap as if cut there, dropping the item the cut runs into", () => {
+    // Full kwargs from the result backend, with a canvas kwarg that runs far past the cap.
+    const lane = "{'task': 'marketing.resource_level', 'args': [], 'kwargs': {'resource_id': 3, 'name': \"it's\"}}, "
+    const canvas =
+      "{'resource_id': 3, 'currency_code': 'NOK', 'start': None, 'skip_assets': False, " +
+      "'run_id': '441e0722-bdb2-443e-aa7d-f282e8e4eae1', 'organization_id': 1, " +
+      `'then_start_lanes': {'lanes': [${lane.repeat(200)}], 'channel': 'meta-ads', 'resource_id': 3}}`
+    expect(canvas.length).toBeGreaterThan(16_384)
+    expect(reprItems(canvas)).toEqual(
+      new Map([
+        ["resource_id", "3"],
+        ["currency_code", "NOK"],
+        ["start", "None"],
+        ["skip_assets", "False"],
+        ["run_id", "441e0722-bdb2-443e-aa7d-f282e8e4eae1"],
+        ["organization_id", "1"],
+      ]),
+    )
+
+    // Sweep the cut across every position of the items after a long first one: inside strings, nested values,
+    // keys and delimiters, the items read are always the leading items of the uncut text.
+    const tail =
+      ", 'run_id': \"it's, 'x': 1\", 'nested': {'a': [1, 'b, c'], 'd': {'e': ('f', 2)}}, " +
+      "'path': 'C:\\', 'when': datetime.date(2024, 1, 2), 'last': 'z'}"
+    const uncut = [...reprItems(`{'pad': ''${tail}`)].slice(1)
+    expect(uncut.map(([key]) => key)).toEqual(["run_id", "nested", "path", "when", "last"])
+    let read = 0
+    for (let shift = tail.length - 1; shift >= 0; shift--) {
+      // The text is 8,192 + shift long, so the cut falls shift characters before its end.
+      const pad = "x".repeat(8_192 - 10 - tail.length + shift)
+      const [first, ...rest] = reprItems(`{'pad': '${pad}'${tail}`)
+      expect(first).toEqual(["pad", pad])
+      expect(rest).toEqual(uncut.slice(0, rest.length))
+      expect(rest.length).toBeGreaterThanOrEqual(read)
+      read = rest.length
+    }
+    expect(read).toBe(uncut.length)
+  })
 })
 
 describe("taskNodeLabels", () => {
