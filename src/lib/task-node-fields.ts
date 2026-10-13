@@ -85,8 +85,9 @@ const closeCandidates = (text: string, start: number, cut: boolean): number[] =>
 }
 
 // saferepr writes bytes (b'it's') and custom reprs (<Opaque it's>) as they are, quotes unescaped. Like search's
-// lenient pattern, such a value after a delimiter runs to the first close that a delimiter (or the end) follows.
-// Returns that close when start opens such a value.
+// lenient pattern, such a value after a delimiter runs to the first close that a delimiter (or the end) follows, as
+// long as the rest of the text splits from there and no value of the same kind opens before it; otherwise its end is
+// ambiguous. In cut text with no such close it runs past the cut. Returns that close when start opens such a value.
 const opaqueClose = (text: string, start: number): string | undefined => {
   const character = text[start]
   const bytes = (character === "'" || character === '"') && text[start - 1] === "b"
@@ -102,16 +103,18 @@ const DELIMITED = /\s*(?:[,:)\]}]|$)/y
 /**
  * Where each quoted string ends, or -1 when its end is ambiguous. A candidate close qualifies when a delimiter
  * (or the end) follows it and the rest of the text splits into quoted strings, opaque values and plain characters
- * without a backslash outside a string, under one of two readings: bytes and `<…>` as opaque values, or as plain
- * text. The real close always qualifies, so exactly one qualifying candidate is the end. With several, saferepr could have
- * written the text from different arguments; with none, the text isn't saferepr's, and any pick is a guess.
+ * without a backslash outside a string, under one of two readings: bytes and `<…>` as opaque values running to any
+ * close a delimiter follows, or as plain text. In saferepr's text the real close qualifies whenever every later bytes
+ * or `<…>` value follows a delimiter and closes before any cut, so exactly one qualifying candidate is the end. With
+ * several, saferepr could have written the text from different arguments; with none, the text isn't saferepr's (or
+ * is one of those exceptions), and any pick is a guess.
  */
 const quotedStrings = (text: string, cut: boolean) => {
   // splits[index]: the text from index on splits; clean[index]: it splits with bytes read as plain strings and <
-  // as a plain character; opaqueEnds[index]: where an opaque value opened there ends. One right-to-left pass fills
-  // all three, so a reading looks up the readings after it rather than recursing through every later string (a
-  // stack frame each), and it tracks closeCandidates' ends as it goes rather than rescanning them per quote
-  // (quadratic on a run of `\'`).
+  // as a plain character; opaqueEnds[index]: where an opaque value opened there ends, or -1 when that's ambiguous.
+  // One right-to-left pass fills all three, so a reading looks up the readings
+  // after it rather than recursing through every later string (a stack frame each), and it tracks closeCandidates'
+  // ends as it goes rather than rescanning them per quote (quadratic on a run of `\'`).
   let tables: { splits: boolean[]; clean: boolean[]; opaqueEnds: number[] } | undefined
   const fillTables = () => {
     const splits: boolean[] = []
@@ -123,16 +126,17 @@ const quotedStrings = (text: string, cut: boolean) => {
     // (cleanly). In cut text a string may close past the cut.
     let singleSplits = cut
     let singleClean = cut
-    // After index: the nearest non-space character, and where the nearest close of each kind that a delimiter
-    // follows ends.
+    // After index: the nearest non-space character, where the nearest close of each kind that a delimiter follows
+    // ends, whether any such close leaves text that splits, and where the nearest opaque value of each kind opens.
     let solid = text.length
     const delimitedEnds: Record<string, number | undefined> = {}
+    const delimitedSplits: Record<string, boolean | undefined> = {}
+    const openers: Record<string, number | undefined> = {}
     splits[text.length] = clean[text.length] = true
     for (let index = text.length - 1; index >= 0; index--) {
       const character = text[index]
       const close = opaqueClose(text, index)
       const opaqueEnd = close ? delimitedEnds[close] : undefined
-      if (opaqueEnd !== undefined) opaqueEnds[index] = opaqueEnd
       doubleClose[index] =
         character === '"' ? index : character === "\\" ? doubleClose[index + 2] : doubleClose[index + 1]
       if (character === "'") {
@@ -150,10 +154,22 @@ const quotedStrings = (text: string, cut: boolean) => {
         splits[index] = character !== "\\" && splits[index + 1]
         clean[index] = character !== "\\" && clean[index + 1]
       }
-      if (opaqueEnd !== undefined) splits[index] = splits[opaqueEnd]
-      if ("'\">".includes(character) && (solid === text.length || ",:)]}".includes(text[solid])))
+      if (close && opaqueEnd === undefined && cut) {
+        splits[index] = true
+        opaqueEnds[index] = text.length
+      } else if (close && opaqueEnd !== undefined) {
+        splits[index] = delimitedSplits[close]!
+        // An inner value of the same kind (<Foo [<Bar>]>) may own the first close; the close itself may read as a
+        // bytes opener (b', ).
+        const nested = (openers[close] ?? text.length) < opaqueEnd - 1
+        opaqueEnds[index] = splits[opaqueEnd] && !nested ? opaqueEnd : -1
+      }
+      if ("'\">".includes(character) && (solid === text.length || ",:)]}".includes(text[solid]))) {
         delimitedEnds[character] = index + 1
+        delimitedSplits[character] ||= splits[index + 1]
+      }
       if (!/\s/.test(character)) solid = index
+      if (close) openers[close] = index
     }
     return { splits, clean, opaqueEnds }
   }
@@ -209,13 +225,26 @@ export const reprItems = (fullText: string | undefined): Map<string, string> => 
   const text = cut ? fullText!.slice(0, MAX_REPR_LENGTH) : fullText
   const start = text?.search(/\S/) ?? -1
   if (!text || start < 0 || !"{[(".includes(text[start])) return items
-  const quotedEnd = quotedStrings(text, cut)
+  const quoted = quotedStrings(text, cut)
+  // Bytes and <…> values end at a guessed close. When the text after them breaks the container's grammar, the guess
+  // was wrong somewhere, so the labels from the first item with such a value on are dropped.
+  let opaque = false
+  let guessedFrom: number | undefined
+  let wellFormed = true
+  const quotedEnd = (index: number) => ((opaque ||= opaqueClose(text, index) !== undefined), quoted(index))
   const isDictionary = text[start] === "{"
-  for (let index = start + 1, position = 0; index < text.length && !")]}".includes(text[index]); position++) {
+  let index = start + 1
+  for (let position = 0; index < text.length && !")]}".includes(text[index]); position++) {
+    opaque = false
     let key = String(position)
     if (isDictionary) {
       const keyEnd = itemEnd(text, index, true, quotedEnd)
-      if (text[keyEnd] !== ":") break
+      if (text[keyEnd] !== ":") {
+        // Past the last item, or a cut or ambiguous key; anything else is a positional item inside a dict.
+        const rest = text.slice(index, keyEnd).trim()
+        wellFormed = keyEnd < 0 || keyEnd === text.length || (")]}".includes(text[keyEnd]) && (!rest || rest === "..."))
+        break
+      }
       key = displayValue(text.slice(index, keyEnd).trim())
       index = keyEnd + 1
     }
@@ -226,10 +255,14 @@ export const reprItems = (fullText: string | undefined): Map<string, string> => 
     // Nothing before the close: an empty container (`[ ]`) or a trailing comma (`(7, )`).
     // An item that runs to the cut may continue past it.
     if (!raw || raw === "..." || (cut && end === text.length)) break
+    if (opaque) guessedFrom ??= items.size
     if (!items.has(key)) items.set(key, displayValue(raw))
     index = text[end] === "," ? end + 1 : end
   }
-  return items
+  // The container closes with its own bracket.
+  if (index < text.length && ")]}".includes(text[index]) && text[index] !== "}])"["{[(".indexOf(text[start])])
+    wellFormed = false
+  return wellFormed || guessedFrom === undefined ? items : new Map([...items].slice(0, guessedFrom))
 }
 
 export interface TaskNodeLabel {

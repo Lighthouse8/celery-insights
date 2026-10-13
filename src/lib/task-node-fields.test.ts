@@ -148,6 +148,27 @@ describe("reprItems", () => {
       ]),
     )
     expect(reprItems("{'id': 1, 'lanes': [{'path': 'C:\\', ', b', 'x'}], 'last': 2}")).toEqual(new Map([["id", "1"]]))
+    // {'b': b"x', y", 'c': 1}: saferepr leaves the bytes' quote raw, and the rest doesn't split after the first
+    // close a delimiter follows, so the bytes value has no clear end.
+    expect(reprItems("{'id': 1, 'a': b'q', 'b': b'x', y', 'c': 1}")).toEqual(
+      new Map([
+        ["id", "1"],
+        ["a", "b'q'"],
+      ]),
+    )
+    // The bytes value can still end at y', so the note may close at either quote.
+    expect(reprItems("{'id': 1, 'm': <M>, 'n': 'a\\', b', 'b': b'x', y', 'c': 1}")).toEqual(
+      new Map([
+        ["id", "1"],
+        ["m", "<M>"],
+      ]),
+    )
+    // {'b': b"x', 'y", 'c': 1}: after b'x' the dict would go on with a bare 'y', so that end is wrong somewhere, and
+    // no label from the first bytes or <…> value on is kept. Likewise a dict closed by ].
+    expect(reprItems("{'id': 1, 'b': b'x', 'y', 'c': 1}")).toEqual(new Map([["id", "1"]]))
+    expect(reprItems("{'id': 1, 'b': b'x'], 'c': 1}")).toEqual(new Map([["id", "1"]]))
+    // The first > after a delimiter may close the inner repr.
+    expect(reprItems("{'id': 1, 'a': <Foo [<Bar>]>, 'c': 1}")).toEqual(new Map([["id", "1"]]))
   })
 
   it("labels common Fyr kwargs in full", () => {
@@ -250,6 +271,8 @@ describe("reprItems", () => {
     // A string crossing the cut whose only quote before it is a \' gets no label either.
     for (const crossing of [`'it\\'s "x", more${"y".repeat(9_000)}'`, `'a\\', b${"z".repeat(9_000)}'`])
       expect(reprItems(`{'id': 1, 'note': ${crossing}}`)).toEqual(new Map([["id", "1"]]))
+    // A custom repr with no close before the cut runs past it.
+    expect(reprItems(`{'id': 1, 'a': <Foo 1, 2${"x".repeat(9_000)}>}`)).toEqual(new Map([["id", "1"]]))
     // A cut that makes both readings of an escaped close split is ambiguous.
     expect(reprItems(`{'id': 1, 'note': 'a\\', b', 'pad': '${"x".repeat(9_000)}'}`)).toEqual(new Map([["id", "1"]]))
   })
