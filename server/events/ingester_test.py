@@ -10,6 +10,7 @@ from events.ingester import (
     SurrealDBIngester,
     build_children_update,
     build_raw_event,
+    build_task_progress_update,
     build_task_upsert,
     build_workflow_membership_upsert,
     build_workflow_summary_recompute,
@@ -168,12 +169,141 @@ class TestBuildTaskUpsert:
         assert query == ""
         assert params == {}
 
+    # Behaviour of the retries and progress clauses is covered by ingester_integration_test.py; these only
+    # check which clauses each event writes.
+    def test_retries_follow_the_event_and_highest_retries_only_goes_up(self):
+        query, params = build_task_upsert(
+            {"type": "task-received", "uuid": "abc", "timestamp": 1700000000.0, "retries": 2}, 0
+        )
+
+        assert "retries = IF $t0_previous.retries IS NONE" in query
+        assert (
+            "highest_retries = math::max([$t0_previous.highest_retries ?? $t0_previous.retries ?? 0, $t0_retries])"
+            in query
+        )
+        assert params["t0_retries"] == 2
+        # A receive never clears progress; only a new attempt's start or retry does.
+        assert "progress" not in query
+
     def test_unique_param_prefix_per_index(self):
         _, params_0 = build_task_upsert({"type": "task-sent", "uuid": "a", "timestamp": 1700000000.0}, 0)
         _, params_7 = build_task_upsert({"type": "task-sent", "uuid": "b", "timestamp": 1700000000.0}, 7)
         assert "t0_id" in params_0
         assert "t7_id" in params_7
         assert set(params_0.keys()).isdisjoint(params_7.keys())
+
+
+class TestBuildTaskProgressUpdate:
+    def test_full_progress(self):
+        event = {
+            "type": "task-progress",
+            "uuid": "abc-123",
+            "timestamp": 1700000000.0,
+            "current": 3,
+            "total": 12,
+            "description": "x" * 300,
+        }
+        query, params = build_task_progress_update(event, 4)
+
+        assert query.startswith("UPDATE type::record('task', $pg4_id) SET progress = ")
+        assert "current: $pg4_current" in query
+        assert "total: $pg4_total" in query
+        assert params["pg4_current"] == 3
+        assert params["pg4_total"] == 12
+        assert params["pg4_description"] == "x" * 200
+
+    def test_omits_unreported_fields(self):
+        query, params = build_task_progress_update(
+            {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, "current": 0.5}, 0
+        )
+
+        assert "total" not in query
+        assert "description" not in query
+        assert params["pg0_current"] == 0.5
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {},
+            {"current": "3"},
+            {"current": True},
+            {"current": -1},
+            {"current": float("nan")},
+            {"current": float("inf")},
+            {"current": 10**400},
+            {"current": 2**64},
+        ],
+    )
+    def test_rejects_invalid_progress(self, fields):
+        event = {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, **fields}
+        assert build_task_progress_update(event, 0) == ("", {})
+
+    def test_attempt_orders_reports_across_workers(self):
+        query, params = build_task_progress_update(
+            {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, "current": 1, "attempt": 2}, 0
+        )
+
+        assert params["pg0_attempt"] == 2
+        assert "attempt: $pg0_attempt" in query
+        assert "$pg0_attempt >= (highest_retries ?? retries ?? 0)" in query
+        assert "last_started_at" not in query
+
+    @pytest.mark.parametrize("attempt", [-1, True, "1", 1.5, 2**64])
+    def test_unusable_attempt_falls_back_to_timestamps(self, attempt):
+        query, params = build_task_progress_update(
+            {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, "current": 1, "attempt": attempt}, 0
+        )
+
+        assert "pg0_attempt" not in params
+        assert "last_started_at IS NONE" in query
+
+    def test_sections_keep_usable_entries_only(self):
+        sections = [
+            {"description": "x" * 300, "current": 3, "total": 12},
+            {"current": 1, "total": 0},
+            {"current": "1"},
+            "not a section",
+            *({"current": n} for n in range(20)),
+        ]
+        query, params = build_task_progress_update(
+            {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, "current": 1, "sections": sections}, 0
+        )
+
+        assert "sections: $pg0_sections" in query
+        kept = params["pg0_sections"]
+        assert kept[0] == {"description": "x" * 200, "current": 3, "total": 12}
+        assert kept[1] == {"current": 1}
+        assert len(kept) == 8  # capped at ten entries before the two unusable ones are dropped
+
+    @pytest.mark.parametrize("sections", [None, "Days", [], [{"current": -1}]])
+    def test_missing_or_unusable_sections_are_left_out(self, sections):
+        query, params = build_task_progress_update(
+            {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, "current": 1, "sections": sections}, 0
+        )
+
+        assert "sections" not in query
+        assert "pg0_sections" not in params
+
+    @pytest.mark.parametrize("total", [0, -1, "10", float("nan"), 10**400, 2**64])
+    def test_invalid_total_keeps_the_count(self, total):
+        query, params = build_task_progress_update(
+            {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, "current": 5, "total": total}, 0
+        )
+
+        assert "total" not in query
+        assert params["pg0_current"] == 5
+
+    def test_new_attempt_events_reset_older_progress(self):
+        query, _ = build_task_upsert({"type": "task-started", "uuid": "abc", "timestamp": 1700000000.0}, 0)
+        assert "progress = IF" in query
+        assert "last_started_at = IF" in query
+
+        query, _ = build_task_upsert({"type": "task-retried", "uuid": "abc", "timestamp": 1700000000.0}, 0)
+        assert "progress = IF" in query
+        assert "last_started_at" not in query
+
+        query, _ = build_task_upsert({"type": "task-succeeded", "uuid": "abc", "timestamp": 1700000000.0}, 0)
+        assert "progress" not in query
 
 
 class TestBuildChildrenUpdate:
@@ -389,6 +519,21 @@ class TestSurrealDBIngester:
         assert "->(type::record('workflow_task'" in query_str
         assert "RELATE OR UPDATE" in query_str
         assert "CREATE event SET" in query_str
+
+    @pytest.mark.asyncio
+    async def test_flush_progress_skips_state_and_workflow_writes(self, mock_db, queue):
+        ingester = SurrealDBIngester(queue)
+        ingester._buffer = [
+            {"type": "task-progress", "uuid": "abc", "timestamp": 1700000000.0, "current": 1, "total": 2},
+        ]
+
+        await ingester._flush()
+
+        query_str = mock_db.query_raw.call_args[0][0]
+        assert "UPDATE type::record('task', $pg0_id) SET progress" in query_str
+        assert "CREATE event SET" in query_str
+        assert "UPSERT" not in query_str
+        assert "RELATE" not in query_str
 
     @pytest.mark.asyncio
     async def test_terminal_events_trigger_callback(self, mock_db, queue, mocker: MockerFixture):  # noqa: ARG002

@@ -43,6 +43,8 @@ class TestBuildTaskMetaUpsert:
         for field in ("type", "args", "kwargs", "worker", "retries", "routing_key"):
             assert params[field] is None
             assert f"THEN ${field} ?? $meta_previous.{field}" in query
+        # Missing metadata keeps the highest retry count seen.
+        assert "ELSE $meta_previous.highest_retries END" in query
         assert "task_search" not in query
 
     def test_extended_invocation_fields_are_written(self):

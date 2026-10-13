@@ -17,6 +17,8 @@ describe("SettingsPanel", () => {
     expect(screen.getByText("Welcome banner")).toBeInTheDocument()
     expect(screen.getByText("Demo mode")).toBeInTheDocument()
     expect(screen.getByText("Live events limit")).toBeInTheDocument()
+    expect(screen.getByText("Task progress")).toBeInTheDocument()
+    expect(screen.getByText("Experimental")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /start tour/i })).toBeInTheDocument()
   })
 
@@ -27,6 +29,26 @@ describe("SettingsPanel", () => {
     await user.click(screen.getByRole("switch", { name: /show welcome banner/i }))
 
     expect(useSettingsStore.getState().hideWelcomeBanner).toBe(true)
+  })
+
+  it("turns task progress on, which starts off", async () => {
+    const user = userEvent.setup()
+    render(<SettingsPanel />)
+    const toggle = screen.getByRole("switch", { name: /show task progress/i })
+    expect(toggle).not.toBeChecked()
+
+    await user.click(toggle)
+
+    expect(useSettingsStore.getState().showTaskProgress).toBe(true)
+  })
+
+  it("lists experimental settings after the others", () => {
+    render(<SettingsPanel />)
+    const tour = screen.getByRole("button", { name: /start tour/i })
+
+    for (const badge of screen.getAllByText("Experimental")) {
+      expect(tour.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
   })
 
   it("resets browser defaults", async () => {

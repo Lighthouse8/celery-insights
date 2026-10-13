@@ -163,7 +163,7 @@ Checks cover browser navigation, APIs, typed observation reads, WebSocket connec
 | Action group | Permissions |
 | --- | --- |
 | Task and worker metadata | `task.metadata.read`, `worker.metadata.read` |
-| Sensitive payloads | `task.input.read`, `task.result.read`, `task.failure.read`, `event.raw.read`, `worker.inspect.read` |
+| Sensitive payloads | `task.input.read`, `task.result.read` (also covers the task-written progress description), `task.failure.read`, `event.raw.read`, `worker.inspect.read` |
 | Analytics and retention overview | `analytics.read` |
 | CSV export | `task.export` plus all metadata/payload permissions |
 | Backups | `backup.export` plus all metadata/payload permissions; `backup.import` for restore |

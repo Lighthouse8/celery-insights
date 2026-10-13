@@ -7,6 +7,8 @@ import Panel from "@components/common/panel"
 import TaskAlerts from "@components/task/alerts/task-alerts"
 import TaskAvatar from "@components/task/task-avatar"
 import TaskExecutionPanel from "@components/task/task-execution-panel"
+import TaskProgressPanel from "@components/task/task-progress"
+import useSettingsStore from "@stores/use-settings-store"
 import TaskLifetimeChart from "@components/task/task-lifetime-chart"
 import TaskPageHeader from "@components/task/task-page-header"
 import { Skeleton } from "@components/ui/skeleton"
@@ -129,6 +131,7 @@ const RelatedTasksPanel = ({ currentTask, members }: { currentTask: Task; member
 }
 
 const TaskPage = () => {
+  const showTaskProgress = useSettingsStore((state) => state.showTaskProgress)
   const { taskId } = Route.useParams()
   const { task: surrealTask, workflow: surrealWorkflow, members, isLoading, error } = useTaskWorkflow(taskId)
   const task = useMemo(() => (surrealTask ? parseTask(surrealTask) : undefined), [surrealTask])
@@ -184,6 +187,11 @@ const TaskPage = () => {
         <div className="grid grid-cols-1 gap-3 px-3 py-2 lg:grid-cols-4" id="task-details">
           <div className="lg:col-span-3">
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              {showTaskProgress && task.progress && (
+                <div className="xl:col-span-2">
+                  <TaskProgressPanel task={task} />
+                </div>
+              )}
               <TaskExecutionPanel task={task} />
               <InputsPanel task={task} />
               <OutcomePanel task={task} />
