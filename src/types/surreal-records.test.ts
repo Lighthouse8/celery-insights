@@ -25,11 +25,19 @@ describe("parseTask progress", () => {
     expect(parseTask({ ...raw, progress: null }).progress).toBeUndefined()
   })
 
-  it("hides a report from an attempt before the current one", () => {
+  it("hides a report from an attempt before the current one, using retries on rows without highest_retries", () => {
     const report = { current: 3, total: 10, updated_at: "2025-06-15T12:00:05Z", attempt: 0 }
 
     expect(parseTask({ ...raw, retries: 1, progress: report }).progress).toBeUndefined()
     expect(parseTask({ ...raw, retries: 0, progress: report }).progress?.current).toBe(3)
+  })
+
+  it("orders reports by the highest retry count seen, not the shown one", () => {
+    const report = { current: 3, total: 10, updated_at: "2025-06-15T12:00:05Z", attempt: 1 }
+    const task = parseTask({ ...raw, retries: 0, highest_retries: 2, progress: report })
+
+    expect(task.retries).toBe(0)
+    expect(task.progress).toBeUndefined()
   })
 
   it("parses sections outermost first, dropping empty optional fields", () => {

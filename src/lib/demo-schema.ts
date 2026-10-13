@@ -55,6 +55,8 @@ DEFINE FIELD OVERWRITE progress.sections.*.current ON task TYPE number;
 DEFINE FIELD OVERWRITE progress.sections.*.total ON task TYPE option<number>;
 DEFINE FIELD OVERWRITE progress.updated_at ON task TYPE datetime;
 DEFINE FIELD OVERWRITE progress.attempt ON task TYPE option<int>;
+-- Highest retry count seen (retries keeps the latest applied one); orders tagged progress. Older rows fall back to retries.
+DEFINE FIELD OVERWRITE highest_retries ON task TYPE option<int>;
 -- Latest attempt's start (started_at keeps the first); rejects late progress from earlier attempts.
 DEFINE FIELD OVERWRITE last_started_at ON task TYPE option<datetime>;
 

@@ -79,7 +79,7 @@ export function scopedDatabase(db: Pick<Surreal, "query">, scope: ReadScope): Pi
   }
   const taskWhere = taskConditions.length ? taskConditions.join(" AND ") : "true"
   const taskMetadata =
-    "id,type,state,sent_at,received_at,started_at,last_started_at,execution_active,execution_observed_at,execution_active_at,succeeded_at,failed_at,retried_at,revoked_at,rejected_at,runtime,last_updated,last_updated_observed,first_observed_at,had_error,eta,expires,retries,exchange,routing_key,worker"
+    "id,type,state,sent_at,received_at,started_at,last_started_at,execution_active,execution_observed_at,execution_active_at,succeeded_at,failed_at,retried_at,revoked_at,rejected_at,runtime,last_updated,last_updated_observed,first_observed_at,had_error,eta,expires,retries,highest_retries,exchange,routing_key,worker"
   const taskFields = [
     taskMetadata,
     // Progress counts are metadata; descriptions (overall and per section) are text the task wrote, so they

@@ -375,19 +375,24 @@ async def test_progress_follows_latest_report_and_resets_on_new_attempt(
     job = await ingest(progress(1700000099.0, current=7, total=10))
     assert job["progress"]["current"] == 2
 
-    # The next retry's task-received comes from a worker whose clock is behind: it still
-    # raises retries, so a late report from attempt 2 is ignored even with no attempt 3 report.
+    # The next retry's task-received comes from a worker whose clock is behind. The shown retries
+    # follows the latest applied event and stays 2, but highest_retries rises, so a late report from
+    # attempt 2 is ignored even with no attempt 3 report.
     job = await ingest(
         {"type": "task-retried", "uuid": "job", "timestamp": 1700000040.0},
         {"type": "task-received", "uuid": "job", "timestamp": 1700000035.0, "retries": 3},
     )
-    assert job["retries"] == 3
-    # The result-backend poller then reads the failed attempt's metadata: it can't lower retries.
+    assert job["retries"] == 2
+    assert job["highest_retries"] == 3
+    # The result-backend poller then applies newer metadata with a lower count: the shown retries
+    # follows it, while highest_retries keeps the highest count for progress ordering.
     query, bindings = _build_task_meta_upsert(
         "job", {"status": "RETRY", "retries": 0, "date_done": "2023-11-14T22:14:00Z"}
     )
     await surreal_db.query(query, bindings)
-    assert (await rows("SELECT * FROM task:job"))[0]["retries"] == 3
+    job = (await rows("SELECT * FROM task:job"))[0]
+    assert job["retries"] == 0
+    assert job["highest_retries"] == 3
     job = await ingest(progress(1700000041.0, current=8, total=10, attempt=2))
     assert job["progress"]["attempt"] == 2
     assert job["progress"]["current"] == 2
@@ -419,15 +424,15 @@ async def test_new_attempt_clears_progress_tagged_with_an_earlier_attempt(
         {"type": "task-received", "uuid": "job", "timestamp": 1700000000.5, "retries": 1},
         {"type": "task-started", "uuid": "job", "timestamp": 1700000001.5},
     )
-    assert job["retries"] == 1
+    assert job["highest_retries"] == 1
     assert job.get("progress") is None
 
-    # An event that raises retries itself clears the report in the same upsert.
+    # An event that raises highest_retries itself clears the report in the same upsert.
     job = await ingest(
         {"type": "task-progress", "uuid": "job", "timestamp": 1700000004.0, "current": 3, "total": 10, "attempt": 1},
         {"type": "task-started", "uuid": "job", "timestamp": 1700000002.0, "retries": 2},
     )
-    assert job["retries"] == 2
+    assert job["highest_retries"] == 2
     assert job.get("progress") is None
 
 

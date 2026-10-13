@@ -89,12 +89,12 @@ def _build_task_meta_upsert(task_id: str, meta: dict, *, search_indexing_enabled
         *(
             f"{field} = IF $meta_apply_state THEN ${field} ?? $meta_previous.{field} "
             f"ELSE $meta_previous.{field} ?? ${field} END"
-            for field in ("type", "args", "kwargs", "worker", "routing_key")
+            for field in ("type", "args", "kwargs", "worker", "retries", "routing_key")
         ),
-        # Retries only go up; metadata from a failed attempt must not lower the count events raised. A result
-        # that doesn't apply only fills a missing count, like the invocation metadata above.
-        "retries = IF $meta_apply_state AND $retries != NONE"
-        " THEN math::max([$meta_previous.retries ?? 0, $retries]) ELSE $meta_previous.retries ?? $retries END",
+        # Highest retry count seen, for progress ordering only (see build_task_upsert in server/events/ingester.py).
+        "highest_retries = IF $retries != NONE"
+        " THEN math::max([$meta_previous.highest_retries ?? $meta_previous.retries ?? 0, $retries])"
+        " ELSE $meta_previous.highest_retries END",
         "kwargs_search_source = IF $kwargs != NONE AND ($meta_apply_state OR $meta_previous.kwargs = NONE) "
         "THEN 'repr' ELSE $meta_previous.kwargs_search_source END",
         "workflow_id = $meta_previous.workflow_id ?? $workflow_id",
