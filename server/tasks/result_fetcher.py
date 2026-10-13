@@ -92,9 +92,9 @@ def _build_task_meta_upsert(task_id: str, meta: dict, *, search_indexing_enabled
             for field in ("type", "args", "kwargs", "worker", "retries", "routing_key")
         ),
         # Highest retry count seen, for progress ordering only (see build_task_upsert in server/events/ingester.py).
-        "max_retries = IF $retries != NONE"
-        " THEN math::max([$meta_previous.max_retries ?? $meta_previous.retries ?? 0, $retries])"
-        " ELSE $meta_previous.max_retries END",
+        "highest_retries = IF $retries != NONE"
+        " THEN math::max([$meta_previous.highest_retries ?? $meta_previous.retries ?? 0, $retries])"
+        " ELSE $meta_previous.highest_retries END",
         "kwargs_search_source = IF $kwargs != NONE AND ($meta_apply_state OR $meta_previous.kwargs = NONE) "
         "THEN 'repr' ELSE $meta_previous.kwargs_search_source END",
         "workflow_id = $meta_previous.workflow_id ?? $workflow_id",

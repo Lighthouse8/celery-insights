@@ -64,7 +64,7 @@ export interface SurrealTask {
   progress?: SurrealTaskProgress | null
   last_started_at?: string | null
   /** Highest retry count seen; `retries` is the latest applied one. Missing on rows stored before it existed. */
-  max_retries?: number | null
+  highest_retries?: number | null
 }
 
 export interface SurrealWorkflow {
@@ -325,7 +325,7 @@ export const parseTask = (raw: SurrealTask): Task => ({
   // together.
   progress:
     raw.progress &&
-    !(typeof raw.progress.attempt === "number" && raw.progress.attempt < (raw.max_retries ?? raw.retries ?? 0))
+    !(typeof raw.progress.attempt === "number" && raw.progress.attempt < (raw.highest_retries ?? raw.retries ?? 0))
       ? {
           current: raw.progress.current,
           total: raw.progress.total ?? undefined,

@@ -171,13 +171,16 @@ class TestBuildTaskUpsert:
 
     # Behaviour of the retries and progress clauses is covered by ingester_integration_test.py; these only
     # check which clauses each event writes.
-    def test_retries_follow_the_event_and_max_retries_only_goes_up(self):
+    def test_retries_follow_the_event_and_highest_retries_only_goes_up(self):
         query, params = build_task_upsert(
             {"type": "task-received", "uuid": "abc", "timestamp": 1700000000.0, "retries": 2}, 0
         )
 
         assert "retries = IF $t0_previous.retries IS NONE" in query
-        assert "max_retries = math::max([$t0_previous.max_retries ?? $t0_previous.retries ?? 0, $t0_retries])" in query
+        assert (
+            "highest_retries = math::max([$t0_previous.highest_retries ?? $t0_previous.retries ?? 0, $t0_retries])"
+            in query
+        )
         assert params["t0_retries"] == 2
         # A receive never clears progress; only a new attempt's start or retry does.
         assert "progress" not in query
@@ -242,7 +245,7 @@ class TestBuildTaskProgressUpdate:
 
         assert params["pg0_attempt"] == 2
         assert "attempt: $pg0_attempt" in query
-        assert "$pg0_attempt >= (max_retries ?? retries ?? 0)" in query
+        assert "$pg0_attempt >= (highest_retries ?? retries ?? 0)" in query
         assert "last_started_at" not in query
 
     @pytest.mark.parametrize("attempt", [-1, True, "1", 1.5, 2**64])

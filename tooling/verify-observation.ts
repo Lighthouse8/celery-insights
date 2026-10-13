@@ -54,7 +54,7 @@ try {
   await root.use({ namespace: "test", database: "observation" })
   await root.query(CORE_SCHEMA)
   await root.query(
-    "CREATE task:sample SET type = 'sample', state = 'SUCCESS', execution_observed_at = time::now(), execution_active_at = time::now(), workflow_id = 'sample', runtime = 0.2, last_updated = time::now(), result = 'private-result', kwargs = '{\"channel\":\"north team\"}', last_started_at = time::now(), max_retries = 2, progress = { current: 1, total: 2, description: 'private-progress', sections: [{ description: 'private-section', current: 3, total: 4 }], updated_at: time::now() }; CREATE event:sample SET task_id = 'sample', event_type = 'task-succeeded', timestamp = time::now(); CREATE worker:sample SET status = 'online', last_updated = time::now(); CREATE workflow:sample SET root_task_id = 'sample', aggregate_state = 'SUCCESS', task_count = 1, last_updated = time::now(); RELATE workflow:sample->workflow_task:sample->task:sample;",
+    "CREATE task:sample SET type = 'sample', state = 'SUCCESS', execution_observed_at = time::now(), execution_active_at = time::now(), workflow_id = 'sample', runtime = 0.2, last_updated = time::now(), result = 'private-result', kwargs = '{\"channel\":\"north team\"}', last_started_at = time::now(), highest_retries = 2, progress = { current: 1, total: 2, description: 'private-progress', sections: [{ description: 'private-section', current: 3, total: 4 }], updated_at: time::now() }; CREATE event:sample SET task_id = 'sample', event_type = 'task-succeeded', timestamp = time::now(); CREATE worker:sample SET status = 'online', last_updated = time::now(); CREATE workflow:sample SET root_task_id = 'sample', aggregate_state = 'SUCCESS', task_count = 1, last_updated = time::now(); RELATE workflow:sample->workflow_task:sample->task:sample;",
   )
   const api = new ObservationApi(root, validateConfig({}), async () => ({
     python_version: "fixture",
@@ -192,7 +192,7 @@ try {
   assert.ok(visible[0].execution_observed_at)
   assert.ok(visible[0].execution_active_at)
   assert.ok(visible[0].last_started_at)
-  assert.equal(visible[0].max_retries, 2)
+  assert.equal(visible[0].highest_retries, 2)
   assert.equal((visible[0].progress as { current: number }).current, 1)
   assert.equal((visible[0].progress as { description?: string }).description, undefined)
   // Section counts stay; their descriptions are task-written text like the overall one.
