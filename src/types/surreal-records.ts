@@ -322,7 +322,8 @@ export const parseTask = (raw: SurrealTask): Task => ({
   result_truncated: raw.result_truncated,
   exception: raw.exception || undefined,
   traceback: raw.traceback || undefined,
-  // A report from an attempt before the current one belongs to a failed attempt.
+  // A report from an attempt before the current one belongs to a failed attempt. The ingester applies the
+  // same rule when storing reports and on new attempts (server/events/ingester.py); change them together.
   progress:
     raw.progress && !(typeof raw.progress.attempt === "number" && raw.progress.attempt < (raw.retries ?? 0))
       ? {

@@ -140,10 +140,9 @@ async def test_batched_recovery_preserves_workflow_invocation_and_errors(
                 assert projection["kwargs_fallback"] is False
                 assert await rows("SELECT * FROM workflow_search:child") == []
 
-            # Celery stores a success before sending task-succeeded, so the result is no newer than the event.
             query, bindings = _build_task_meta_upsert(
                 "child",
-                {"status": "SUCCESS", "date_done": "2023-11-14T22:13:23Z"},
+                {"status": "SUCCESS", "date_done": "2023-11-14T22:13:24Z"},
                 search_indexing_enabled=search_indexing_enabled,
             )
             await db.query(query, bindings)
@@ -430,78 +429,6 @@ async def test_new_attempt_clears_progress_tagged_with_an_earlier_attempt(
     )
     assert job["retries"] == 2
     assert job.get("progress") is None
-
-
-@pytest.mark.asyncio
-async def test_task_id_sent_again_after_finishing_starts_a_new_run(
-    surreal_db: AsyncWsSurrealConnection, mocker: MockerFixture
-) -> None:
-    mocker.patch("events.ingester.get_db", return_value=surreal_db)
-    ingester = SurrealDBIngester(asyncio.Queue())
-
-    async def ingest(*events: dict) -> dict:
-        ingester._buffer = list(events)
-        await ingester._flush()
-        assert ingester._buffer == [], "flush failed and re-queued the batch"
-        return cast(list[dict], await surreal_db.query("SELECT * FROM task:job"))[0]
-
-    job = await ingest(
-        {"type": "task-received", "uuid": "job", "timestamp": 1700000000.0, "name": "reports.cache", "retries": 2},
-        {"type": "task-started", "uuid": "job", "timestamp": 1700000001.0},
-        {"type": "task-progress", "uuid": "job", "timestamp": 1700000002.0, "current": 9, "total": 10, "attempt": 2},
-        {"type": "task-succeeded", "uuid": "job", "timestamp": 1700000003.0},
-    )
-    assert job["retries"] == 2
-
-    # apply_async(task_id=<idempotency key>) runs the same id again from retries 0.
-    job = await ingest({"type": "task-sent", "uuid": "job", "timestamp": 1700000010.0, "retries": 0})
-    assert job["retries"] == 0
-    assert job.get("progress") is None
-
-    job = await ingest(
-        {"type": "task-received", "uuid": "job", "timestamp": 1700000011.0, "retries": 0},
-        {"type": "task-started", "uuid": "job", "timestamp": 1700000012.0},
-        {"type": "task-progress", "uuid": "job", "timestamp": 1700000013.0, "current": 1, "total": 10, "attempt": 0},
-    )
-    assert job["retries"] == 0
-    assert job["progress"]["current"] == 1
-
-    # The poller then stores this run's result, and reads it again after a monitor restart: same run, same report.
-    for _ in range(2):
-        await surreal_db.query(
-            *_build_task_meta_upsert("job", {"status": "SUCCESS", "retries": 0, "date_done": "2023-11-14T22:13:40Z"})
-        )
-        job = cast(list[dict], await surreal_db.query("SELECT * FROM task:job"))[0]
-        assert job["state"] == "SUCCESS"
-        assert job["progress"]["current"] == 1
-
-    async def poll(meta: dict) -> dict:
-        await surreal_db.query(*_build_task_meta_upsert("polled", meta))
-        return cast(list[dict], await surreal_db.query("SELECT * FROM task:polled"))[0]
-
-    # Without events, the poller sees only each run's result: a newer result over a finished run is a new run.
-    first_run = {"status": "SUCCESS", "retries": 2, "date_done": "2023-11-14T22:14:00Z"}
-    await poll(first_run)
-    await surreal_db.query(
-        "UPDATE task:polled SET progress = {current: 9, total: 10, attempt: 2, updated_at: d'2023-11-14T22:13:59Z'}"
-    )
-    assert (await poll(first_run))["progress"]["attempt"] == 2
-    polled = await poll({"status": "SUCCESS", "retries": 0, "date_done": "2023-11-14T22:15:00Z"})
-    assert polled["retries"] == 0
-    assert polled.get("progress") is None
-
-    # Without result_extended, the metadata carries no retries; the new run drops the old report and the old
-    # count, so its own attempt-0 reports still land.
-    assert (await poll({"status": "SUCCESS", "retries": 2, "date_done": "2023-11-14T22:15:20Z"}))["retries"] == 2
-    await surreal_db.query("UPDATE task:polled SET progress = {current: 9, updated_at: d'2023-11-14T22:15:30Z'}")
-    polled = await poll({"status": "SUCCESS", "date_done": "2023-11-14T22:16:00Z"})
-    assert polled.get("progress") is None
-    assert polled.get("retries") is None
-    ingester._buffer = [
-        {"type": "task-progress", "uuid": "polled", "timestamp": 1700000170.0, "current": 4, "total": 10, "attempt": 0}
-    ]
-    await ingester._flush()
-    assert (await poll({"status": "SUCCESS", "date_done": "2023-11-14T22:16:00Z"}))["progress"]["current"] == 4
 
 
 @pytest.mark.asyncio

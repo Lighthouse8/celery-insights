@@ -186,4 +186,46 @@ describe("useTaskWorkflow", () => {
       expect(snapshotCalls()).toBe(index + 2)
     }
   })
+
+  it("applies each overlapping snapshot that resolves in order", async () => {
+    const snapshot = (state: string) => [null, null, { task: { id: "task:root", state }, workflow: null, members: [] }]
+    const pending: Array<(value: unknown) => void> = []
+    const { result } = renderHook(() => useTaskWorkflow("root"))
+    await waitFor(() => expect(mockLiveOf).toHaveBeenCalled())
+    mockQuery.mockImplementation(() => new Promise((resolve) => pending.push(resolve)))
+
+    // A slow query under a steady update stream: each response lands after the next request started.
+    act(() => emit({ value: { __observation_refresh: true } }))
+    act(() => emit({ value: { __observation_refresh: true } }))
+    await act(async () => pending[0](snapshot("STARTED")))
+    expect(result.current.task?.state).toBe("STARTED")
+
+    act(() => emit({ value: { __observation_refresh: true } }))
+    await act(async () => pending[1](snapshot("RETRY")))
+    expect(result.current.task?.state).toBe("RETRY")
+    await act(async () => pending[2](snapshot("SUCCESS")))
+    expect(result.current.task?.state).toBe("SUCCESS")
+  })
+
+  it("ignores a snapshot for the previous task id", async () => {
+    const pending: Array<(value: unknown) => void> = []
+    const { result, rerender } = renderHook(({ taskId }) => useTaskWorkflow(taskId), {
+      initialProps: { taskId: "root" },
+    })
+    await waitFor(() => expect(mockLiveOf).toHaveBeenCalled())
+    mockQuery.mockImplementation((query: string) =>
+      query.startsWith("LIVE") ? Promise.resolve(["live-uuid"]) : new Promise((resolve) => pending.push(resolve)),
+    )
+
+    act(() => emit({ value: { __observation_refresh: true } }))
+    rerender({ taskId: "other" })
+    await waitFor(() => expect(pending).toHaveLength(2))
+    expect(result.current.isLoading).toBe(true)
+    await act(async () => pending[0]([null, null, { task: { id: "task:root", state: "STALE" }, workflow: null }]))
+    expect(result.current.task?.state).toBeUndefined()
+    expect(result.current.isLoading).toBe(true)
+    await act(async () => pending[1]([null, null, { task: { id: "task:other" }, workflow: null, members: [] }]))
+    expect(result.current.task?.id).toBe("task:other")
+    expect(result.current.isLoading).toBe(false)
+  })
 })

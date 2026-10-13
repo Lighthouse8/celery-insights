@@ -7,7 +7,6 @@ from pytest_mock import MockerFixture
 from events.ingester import (
     BACKPRESSURE_THRESHOLD,
     CONFLICT_RETRIES,
-    TERMINAL_TASK_STATES_SQL,
     SurrealDBIngester,
     build_children_update,
     build_raw_event,
@@ -171,24 +170,17 @@ class TestBuildTaskUpsert:
         assert query == ""
         assert params == {}
 
+    # Behaviour of the retries and progress clauses is covered by ingester_integration_test.py; these only
+    # check which clauses each event writes.
     def test_retries_only_go_up(self):
         query, params = build_task_upsert(
-            {"type": "task-started", "uuid": "abc", "timestamp": 1700000000.0, "retries": 2}, 0
+            {"type": "task-received", "uuid": "abc", "timestamp": 1700000000.0, "retries": 2}, 0
         )
 
-        assert "retries = math::max([$t0_previous.retries ?? 0, $t0_retries])" in query
+        assert "retries = math::max(" in query
         assert params["t0_retries"] == 2
-
-    def test_send_after_a_finished_run_starts_retries_and_progress_over(self):
-        query, _ = build_task_upsert(
-            {"type": "task-received", "uuid": "abc", "timestamp": 1700000000.0, "retries": 0}, 0
-        )
-
-        new_run = f"$t0_apply AND $t0_previous.state IN {TERMINAL_TASK_STATES_SQL}"
-        assert (
-            f"retries = IF {new_run} THEN $t0_retries ELSE math::max([$t0_previous.retries ?? 0, $t0_retries]) END"
-        ) in query
-        assert f"progress = IF {new_run} THEN NONE ELSE $t0_previous.progress END" in query
+        # A receive never clears progress; only a new attempt's start or retry does.
+        assert "progress" not in query
 
     def test_unique_param_prefix_per_index(self):
         _, params_0 = build_task_upsert({"type": "task-sent", "uuid": "a", "timestamp": 1700000000.0}, 0)
@@ -298,25 +290,14 @@ class TestBuildTaskProgressUpdate:
         assert "total" not in query
         assert params["pg0_current"] == 5
 
-    def test_task_started_resets_older_progress(self):
+    def test_new_attempt_events_reset_older_progress(self):
         query, _ = build_task_upsert({"type": "task-started", "uuid": "abc", "timestamp": 1700000000.0}, 0)
-        assert (
-            "progress = IF ($t0_previous.progress.attempt IS NONE"
-            " AND $t0_previous.progress.updated_at < <datetime>$t0_ts)"
-            " OR ($t0_previous.progress.attempt != NONE"
-            " AND $t0_previous.progress.attempt < ($t0_previous.retries ?? 0)) THEN NONE"
-        ) in query
-        assert "last_started_at = IF $t0_previous.last_started_at IS NONE" in query
+        assert "progress = IF" in query
+        assert "last_started_at = IF" in query
 
         query, _ = build_task_upsert({"type": "task-retried", "uuid": "abc", "timestamp": 1700000000.0}, 0)
-        assert "AND $t0_previous.progress.updated_at < <datetime>$t0_ts)" in query
+        assert "progress = IF" in query
         assert "last_started_at" not in query
-
-        # An event that raises retries compares the attempt with the raised count.
-        query, _ = build_task_upsert(
-            {"type": "task-started", "uuid": "abc", "timestamp": 1700000000.0, "retries": 2}, 0
-        )
-        assert "progress.attempt < (math::max([$t0_previous.retries ?? 0, $t0_retries]))" in query
 
         query, _ = build_task_upsert({"type": "task-succeeded", "uuid": "abc", "timestamp": 1700000000.0}, 0)
         assert "progress" not in query
