@@ -97,9 +97,9 @@ const opaqueClose = (text: string, start: number): string | undefined => {
 const DELIMITED = /\s*(?:[,:)\]}]|$)/y
 
 /**
- * Picks each quoted string's end the way the search matcher does: the first candidate after which the rest of
- * the text still splits into quoted strings, opaque values and plain characters without a backslash, preferring
- * one a delimiter follows. Text no reading splits takes the first candidate.
+ * Picks each quoted string's end the way the search matcher does: a candidate after which the rest of the text
+ * still splits into quoted strings, opaque values and plain characters without a backslash, preferring the last
+ * one a delimiter follows, then the first that splits. Text no reading splits takes the first candidate.
  */
 const quotedStrings = (text: string) => {
   // splits[index]: the text from index on splits; opaqueEnds[index]: where an opaque value opened there ends. One
@@ -152,11 +152,14 @@ const quotedStrings = (text: string) => {
     // Without a backslash every string has one end.
     if (candidates.length < 2) return candidates[0] ?? text.length
     const { splits } = (tables ??= fillTables())
-    // A real close is followed by a delimiter or the end. Opaque values let junk after a `\'` split too, so a
-    // delimited candidate goes first.
+    // A real close is followed by a delimiter or the end. Opaque values let junk after a `\'` split too (`'\'a\', b'`
+    // reads `b'` as bytes), so a delimited candidate goes first, and the last one: every candidate before it is a
+    // `\'`, which may be an escaped quote.
     const delimited = (end: number) => ((DELIMITED.lastIndex = end), DELIMITED.test(text))
     return (
-      candidates.find((end) => splits[end] && delimited(end)) ?? candidates.find((end) => splits[end]) ?? candidates[0]
+      candidates.filter((end) => splits[end] && delimited(end)).pop() ??
+      candidates.find((end) => splits[end]) ??
+      candidates[0]
     )
   }
 }

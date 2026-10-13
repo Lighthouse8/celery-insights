@@ -130,6 +130,14 @@ describe("reprItems", () => {
         ["id", "1"],
       ]),
     )
+    // saferepr of {'note': "'a', b", 'id': 1}: the \' before the comma also splits when the b' after it reads as
+    // bytes, but the real close splits and a delimiter follows it too.
+    expect(reprItems("{'note': '\\'a\\', b', 'id': 1}")).toEqual(
+      new Map([
+        ["note", "\\'a\\', b"],
+        ["id", "1"],
+      ]),
+    )
   })
 
   it("splits thousands of strings after a \\' without a stack frame per string", () => {
